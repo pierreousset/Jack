@@ -1,0 +1,8 @@
+node_modules/
+dist/
+jack-runs/
+*.log
+.DS_Store
+coverage/
+.env
+.env.*

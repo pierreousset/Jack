@@ -1,0 +1,59 @@
+{
+  "name": "jack-orchestrator",
+  "version": "0.1.0",
+  "description": "Open-source AI orchestrator that routes tasks to the AI subscriptions you already pay for (Claude Code, Codex, Gemini) and free local models.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "jack": "./dist/cli/index.js"
+  },
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "jack.config.example.json"
+  ],
+  "engines": {
+    "node": ">=18.17"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "biome check src test",
+    "lint:fix": "biome check --write src test"
+  },
+  "keywords": [
+    "ai",
+    "orchestrator",
+    "agents",
+    "claude-code",
+    "codex",
+    "gemini",
+    "ollama",
+    "lm-studio",
+    "mcp",
+    "router",
+    "multi-agent"
+  ],
+  "dependencies": {
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@biomejs/biome": "^1.9.4",
+    "@types/node": "^20.14.0",
+    "tsup": "^8.3.5",
+    "typescript": "^5.6.3",
+    "vitest": "^2.1.8"
+  }
+}
