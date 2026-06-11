@@ -24,6 +24,12 @@ const AMBIGUOUS_CAPABILITIES = new Set(['reason', 'code-gen']);
 export interface RouterOptions {
   preferTier: CostTier;
   brain?: Brain;
+  /**
+   * Workers known to have failed earlier in this run (e.g. bad subscription /
+   * quota). They stay eligible as last-resort fallbacks but are ordered last,
+   * so Jack stops wasting the first attempt on a worker that just failed.
+   */
+  degraded?: Set<string>;
 }
 
 export async function routeSubtask(
@@ -32,7 +38,12 @@ export async function routeSubtask(
   options: RouterOptions,
 ): Promise<RouterDecision> {
   const preferred = subtask.preferredTier ?? options.preferTier;
-  const candidates = registry.candidatesFor(subtask.capability, preferred);
+  const ranked = registry.candidatesFor(subtask.capability, preferred);
+  // Push known-bad workers to the back without dropping them entirely.
+  const degraded = options.degraded ?? new Set<string>();
+  const candidates = degraded.size
+    ? [...ranked].sort((a, b) => Number(degraded.has(a.id)) - Number(degraded.has(b.id)))
+    : ranked;
   if (candidates.length === 0) {
     throw new Error(
       `no worker available for capability "${subtask.capability}" (subtask ${subtask.id}). Run \`jack doctor\`.`,

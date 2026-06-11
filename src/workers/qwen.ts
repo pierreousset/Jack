@@ -1,28 +1,28 @@
 /**
- * Worker adapter for the Gemini CLI, driven through its officially supported
- * non-interactive mode: `gemini -p "<prompt>"` (plain text on stdout).
+ * Worker adapter for Qwen Code (Alibaba's fork of the Gemini CLI), driven
+ * through its officially supported non-interactive mode: `qwen -p "<prompt>"`.
  */
 import { runCli, toWorkerResult } from './subprocess.js';
 import type { Capability, Worker, WorkerInvocation, WorkerResult } from './worker.js';
 
-export interface GeminiWorkerConfig {
+export interface QwenWorkerConfig {
   command?: string;
   extraArgs?: string[];
   timeoutMs?: number;
 }
 
-export class GeminiWorker implements Worker {
-  readonly id = 'gemini';
-  readonly name = 'Gemini CLI (subscription CLI)';
-  readonly capabilities: Capability[] = ['code-gen', 'reason', 'summarize', 'chat', 'web'];
+export class QwenWorker implements Worker {
+  readonly id = 'qwen';
+  readonly name = 'Qwen Code (subscription CLI)';
+  readonly capabilities: Capability[] = ['code-gen', 'reason', 'summarize', 'chat'];
   readonly costTier = 'subscription' as const;
 
   private readonly command: string;
   private readonly extraArgs: string[];
   private readonly timeoutMs?: number;
 
-  constructor(config: GeminiWorkerConfig = {}) {
-    this.command = config.command ?? 'gemini';
+  constructor(config: QwenWorkerConfig = {}) {
+    this.command = config.command ?? 'qwen';
     this.extraArgs = config.extraArgs ?? [];
     this.timeoutMs = config.timeoutMs;
   }
@@ -41,9 +41,6 @@ export class GeminiWorker implements Worker {
       timeoutMs: this.timeoutMs,
       signal: inv.signal,
       onChunk: inv.onChunk,
-      // Gemini CLI refuses to run headless in an "untrusted" directory; Jack
-      // invokes it non-interactively, so trust the workspace by default.
-      env: { GEMINI_CLI_TRUST_WORKSPACE: 'true' },
     });
     return toWorkerResult(run);
   }

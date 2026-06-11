@@ -4,6 +4,8 @@ export interface Task {
   id: string;
   prompt: string;
   cwd: string;
+  /** Recent conversation context, threaded into planning and worker prompts. */
+  context?: string;
 }
 
 export interface Subtask {

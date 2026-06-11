@@ -102,6 +102,13 @@ describe('orchestrate', () => {
     expect(outcome?.attempts).toBe(2);
   });
 
+  // A multi-step prompt so planTask consults the brain instead of the fast path.
+  const complexTask: Task = {
+    id: 't1',
+    prompt: 'find a fact, then use that fact to produce a result',
+    cwd: '/tmp',
+  };
+
   it('threads dependency outputs into downstream prompts (brain-planned)', async () => {
     const registry = new WorkerRegistry();
     const worker = new MockWorker({
@@ -132,10 +139,10 @@ describe('orchestrate', () => {
       }),
     );
 
-    const record = await orchestrate(task, baseOpts(registry, brain));
+    const record = await orchestrate(complexTask, baseOpts(registry, brain));
 
     expect(record.plan.subtasks).toHaveLength(2);
-    const s2Invocation = worker.invocations.find((inv) => inv.prompt.startsWith('use the fact'));
+    const s2Invocation = worker.invocations.find((inv) => inv.prompt.includes('use the fact'));
     expect(s2Invocation?.prompt).toContain('FACT-42');
     expect(record.report).toBe('final synthesis');
   });
@@ -147,6 +154,96 @@ describe('orchestrate', () => {
     );
 
     const record = await orchestrate(task, baseOpts(registry));
+    expect(record.status).toBe('failed');
+  });
+
+  it('tries every capable worker even past maxAttemptsPerSubtask', async () => {
+    const registry = new WorkerRegistry();
+    // Three broken workers then a good one; maxAttempts=2 must NOT drop the good one.
+    for (const id of ['bad1', 'bad2', 'bad3']) {
+      registry.register(
+        new MockWorker({ id, respond: () => ({ ok: false, text: '', error: 'nope' }) }),
+      );
+    }
+    registry.register(
+      new MockWorker({ id: 'good', respond: () => ({ ok: true, text: 'finally' }) }),
+    );
+
+    const record = await orchestrate(task, { ...baseOpts(registry), maxAttemptsPerSubtask: 2 });
+    expect(record.status).toBe('done');
+    expect(record.report).toBe('finally');
+    expect(record.outcomes[0]?.workerId).toBe('good');
+  });
+
+  it('deprioritizes a worker that failed with an auth error and reports it clearly', async () => {
+    const registry = new WorkerRegistry();
+    registry.register(
+      new MockWorker({
+        id: 'no-sub',
+        costTier: 'subscription',
+        respond: () => ({ ok: false, text: '', error: 'Error: 401 Unauthorized — please login' }),
+      }),
+    );
+
+    const degraded = new Set<string>();
+    const record = await orchestrate(task, { ...baseOpts(registry), degraded });
+
+    expect(record.status).toBe('failed');
+    expect(degraded.has('no-sub')).toBe(true);
+    expect(record.report).toMatch(/login|quota/i);
+  });
+
+  it('rescues a subtask whose capability has no dedicated worker via a generalist', async () => {
+    const registry = new WorkerRegistry();
+    // No 'web' worker exists; a chat worker should still answer rather than fail.
+    registry.register(
+      new MockWorker({
+        id: 'chat-only',
+        capabilities: ['chat'],
+        respond: () => ({ ok: true, text: 'here are some news APIs' }),
+      }),
+    );
+    const brain = new Brain(
+      new MockWorker({
+        id: 'brain',
+        respond: () => ({
+          ok: true,
+          text: JSON.stringify({
+            subtasks: [{ id: 's1', prompt: 'latest news', capability: 'web' }],
+          }),
+        }),
+      }),
+    );
+
+    const record = await orchestrate(complexTask, baseOpts(registry, brain));
+    expect(record.status).toBe('done');
+    expect(record.outcomes[0]?.workerId).toBe('chat-only');
+    expect(record.report).toBe('here are some news APIs');
+  });
+
+  it('fails cleanly when there is no worker at all for a subtask', async () => {
+    const registry = new WorkerRegistry();
+    // A single web-only worker that fails: no generalist exists to rescue it.
+    registry.register(
+      new MockWorker({
+        id: 'web-only',
+        capabilities: ['web'],
+        respond: () => ({ ok: false, text: '', error: 'down' }),
+      }),
+    );
+    const brain = new Brain(
+      new MockWorker({
+        id: 'brain',
+        respond: () => ({
+          ok: true,
+          text: JSON.stringify({
+            subtasks: [{ id: 's1', prompt: 'latest news', capability: 'web' }],
+          }),
+        }),
+      }),
+    );
+
+    const record = await orchestrate(complexTask, baseOpts(registry, brain));
     expect(record.status).toBe('failed');
   });
 });

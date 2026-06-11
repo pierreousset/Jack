@@ -24,8 +24,11 @@ export type {
 export { ClaudeCodeWorker } from './workers/claude-code.js';
 export { CodexWorker } from './workers/codex.js';
 export { GeminiWorker } from './workers/gemini.js';
+export { GrokWorker } from './workers/grok.js';
 export { LocalOpenAiWorker } from './workers/local-openai.js';
 export { MockWorker } from './workers/mock.js';
+export { OpenCodeWorker } from './workers/opencode.js';
+export { QwenWorker } from './workers/qwen.js';
 export { WorkerRegistry } from './workers/registry.js';
 export { runCli, tolerantJsonParse } from './workers/subprocess.js';
 export type {

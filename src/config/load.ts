@@ -13,7 +13,10 @@ import { join } from 'node:path';
 import { ClaudeCodeWorker } from '../workers/claude-code.js';
 import { CodexWorker } from '../workers/codex.js';
 import { GeminiWorker } from '../workers/gemini.js';
+import { GrokWorker } from '../workers/grok.js';
 import { LocalOpenAiWorker } from '../workers/local-openai.js';
+import { OpenCodeWorker } from '../workers/opencode.js';
+import { QwenWorker } from '../workers/qwen.js';
 import { WorkerRegistry } from '../workers/registry.js';
 import { type Detection, detectEnvironment } from './detect.js';
 import { type JackConfig, jackConfigSchema } from './schema.js';
@@ -80,6 +83,15 @@ export async function buildRegistry(config: JackConfig): Promise<BuiltRegistry> 
   }
   if (config.workers.gemini.enabled && found.get('gemini')) {
     registry.register(new GeminiWorker(config.workers.gemini));
+  }
+  if (config.workers.qwen.enabled && found.get('qwen')) {
+    registry.register(new QwenWorker(config.workers.qwen));
+  }
+  if (config.workers.opencode.enabled && found.get('opencode')) {
+    registry.register(new OpenCodeWorker(config.workers.opencode));
+  }
+  if (config.workers.grok.enabled && found.get('grok')) {
+    registry.register(new GrokWorker(config.workers.grok));
   }
 
   if (config.workers.local.length > 0) {

@@ -6,7 +6,7 @@
 import { runCli } from '../workers/subprocess.js';
 
 export interface DetectedCli {
-  id: 'claude-code' | 'codex' | 'gemini';
+  id: 'claude-code' | 'codex' | 'gemini' | 'qwen' | 'opencode' | 'grok';
   command: string;
   found: boolean;
   version?: string;
@@ -28,6 +28,9 @@ const CLI_PROBES: Array<{ id: DetectedCli['id']; command: string }> = [
   { id: 'claude-code', command: 'claude' },
   { id: 'codex', command: 'codex' },
   { id: 'gemini', command: 'gemini' },
+  { id: 'qwen', command: 'qwen' },
+  { id: 'opencode', command: 'opencode' },
+  { id: 'grok', command: 'grok' },
 ];
 
 const LOCAL_PROBES: Array<{ baseUrl: string; label: DetectedLocalServer['label'] }> = [

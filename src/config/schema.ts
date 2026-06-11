@@ -24,6 +24,9 @@ export const jackConfigSchema = z.object({
       'claude-code': cliWorkerSchema.default({}),
       codex: cliWorkerSchema.default({}),
       gemini: cliWorkerSchema.default({}),
+      qwen: cliWorkerSchema.default({}),
+      opencode: cliWorkerSchema.default({}),
+      grok: cliWorkerSchema.default({}),
       /** Any number of OpenAI-compatible local servers (Ollama, LM Studio). */
       local: z.array(localWorkerSchema).default([]),
     })

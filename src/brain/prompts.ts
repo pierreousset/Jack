@@ -13,7 +13,15 @@ export const CAPABILITIES: Capability[] = [
   'web',
 ];
 
-export function planningPrompt(taskPrompt: string): string {
+export function planningPrompt(taskPrompt: string, context?: string): string {
+  const contextSection = context
+    ? `
+Recent conversation between the user and Jack (the task below may refer to it — resolve any references like "it"/"the previous one" so subtask prompts are explicit):
+"""
+${context}
+"""
+`
+    : '';
   return `You are Jack, an AI task orchestrator. Decompose the user's task into the SMALLEST useful number of subtasks (1 is fine for simple tasks, rarely more than 4).
 
 Each subtask gets a capability tag among: ${CAPABILITIES.join(', ')}.
@@ -26,7 +34,7 @@ Each subtask gets a capability tag among: ${CAPABILITIES.join(', ')}.
 
 Subtasks may depend on earlier subtasks via "dependsOn" (use the subtask ids).
 Each subtask prompt must be SELF-CONTAINED: a worker sees only that prompt (plus the outputs of its dependencies, appended automatically).
-
+${contextSection}
 User task:
 """
 ${taskPrompt}
@@ -58,9 +66,18 @@ Respond with ONLY a JSON object, no markdown fences:
 export function synthesisPrompt(
   taskPrompt: string,
   outputs: Array<{ subtaskId: string; text: string }>,
+  context?: string,
 ): string {
+  const contextSection = context
+    ? `
+Recent conversation with the user (for reference):
+"""
+${context}
+"""
+`
+    : '';
   return `You are Jack, an AI orchestrator. Several workers completed subtasks of the user's task. Write the final consolidated answer for the user. Be direct, keep it as short as the task allows, do not mention the orchestration machinery.
-
+${contextSection}
 Original task:
 """
 ${taskPrompt}

@@ -51,7 +51,7 @@ export function classifyCapability(prompt: string): Capability {
   return 'chat';
 }
 
-export function singleSubtaskPlan(task: Task): Plan {
+export function singleSubtaskPlan(task: Task, rationale?: string): Plan {
   return {
     taskId: task.id,
     subtasks: [
@@ -61,15 +61,36 @@ export function singleSubtaskPlan(task: Task): Plan {
         capability: classifyCapability(task.prompt),
       },
     ],
-    rationale: 'fallback: single subtask (no brain decomposition)',
+    rationale: rationale ?? 'fallback: single subtask (no brain decomposition)',
   };
+}
+
+/** Signals that a task genuinely needs multi-step decomposition by the brain. */
+const MULTISTEP = /(\bthen\b|after that|puis\b|ensuite|étape|step\s*\d|d'abord|firstly|;|\n)/i;
+
+/**
+ * Cheap heuristic: is this input obviously a single, simple request that does
+ * NOT need a brain round-trip to decompose? Skipping planning for greetings
+ * and one-liners removes a whole CLI cold-start from the common path.
+ */
+export function looksSimple(prompt: string): boolean {
+  const trimmed = prompt.trim();
+  if (!trimmed) return true;
+  if (trimmed.includes('\n')) return false; // multi-line → likely structured/multi-step
+  if (MULTISTEP.test(trimmed)) return false;
+  if (/^\s*[-*]|\d+[.)]/.test(trimmed)) return false; // list markers
+  return trimmed.split(/\s+/).length <= 30;
 }
 
 export async function planTask(task: Task, brain?: Brain): Promise<Plan> {
   if (!brain) return singleSubtaskPlan(task);
+  // Fast path: skip the brain (a full CLI call) for clearly-simple input.
+  if (looksSimple(task.prompt)) {
+    return singleSubtaskPlan(task, 'fast path: simple request, no decomposition needed');
+  }
   try {
     const response = planResponseSchema.parse(
-      await brain.askJson<unknown>(planningPrompt(task.prompt)),
+      await brain.askJson<unknown>(planningPrompt(task.prompt, task.context)),
     );
     return {
       taskId: task.id,
