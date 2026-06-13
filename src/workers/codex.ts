@@ -51,13 +51,15 @@ export class CodexWorker implements Worker {
         ...this.extraArgs,
         inv.prompt,
       ];
+      // NOTE: `codex exec` interleaves progress logs on stdout, so we do NOT
+      // forward raw chunks to onChunk (that would stream noise, not the answer).
+      // The final message comes from --output-last-message, read back below.
       const run = await runCli({
         cmd: this.command,
         args,
         cwd: inv.cwd,
         timeoutMs: this.timeoutMs,
         signal: inv.signal,
-        onChunk: inv.onChunk,
       });
 
       let lastMessage: string | undefined;

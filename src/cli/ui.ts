@@ -75,6 +75,7 @@ export class MultiProgress {
   private rendered = 0;
   private timer?: NodeJS.Timeout;
   private frame = 0;
+  private stopped = false;
   private readonly enabled = !!process.stderr.isTTY;
 
   start(): void {
@@ -99,8 +100,10 @@ export class MultiProgress {
     this.upsert(key, text, 'err');
   }
 
-  /** Final render (no spinner frames) and release the screen region. */
+  /** Final render (no spinner frames) and release the screen region. Idempotent. */
   stop(): void {
+    if (this.stopped) return;
+    this.stopped = true;
     if (this.timer) clearInterval(this.timer);
     this.timer = undefined;
     if (this.enabled) {

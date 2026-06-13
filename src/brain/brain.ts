@@ -1,3 +1,4 @@
+import { ClaudeCodeWorker } from '../workers/claude-code.js';
 import type { WorkerRegistry } from '../workers/registry.js';
 /**
  * Jack's brain: a thin wrapper around whichever Worker is designated to make
@@ -49,8 +50,17 @@ export function stripMarkdownFences(text: string): string {
 /**
  * Resolve the brain worker: explicit config id first, then any worker tagged
  * role 'brain', then nothing (caller decides how to degrade).
+ *
+ * For a Claude-CLI brain we swap in a lean profile (fast model, no MCP) so
+ * planning/routing/synthesis don't pay the execution model's latency and cost.
  */
-export function resolveBrain(registry: WorkerRegistry, configuredId: string): Brain | undefined {
+export function resolveBrain(
+  registry: WorkerRegistry,
+  configuredId: string,
+  options: { model?: string } = {},
+): Brain | undefined {
   const worker = registry.get(configuredId) ?? registry.brain();
-  return worker ? new Brain(worker) : undefined;
+  if (!worker) return undefined;
+  if (worker instanceof ClaudeCodeWorker) return new Brain(worker.brainProfile(options.model));
+  return new Brain(worker);
 }

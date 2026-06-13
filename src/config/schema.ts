@@ -19,6 +19,12 @@ const localWorkerSchema = z.object({
 export const jackConfigSchema = z.object({
   /** Worker id used for planning/routing decisions. */
   brain: z.string().default('claude-code'),
+  /**
+   * Model the brain uses for planning/routing/synthesis when it runs on the
+   * Claude CLI. Planning is lightweight, so a fast cheap model (Haiku) is the
+   * default — it cuts cost ~5x and trims latency vs. the execution model.
+   */
+  brainModel: z.string().default('haiku'),
   workers: z
     .object({
       'claude-code': cliWorkerSchema.default({}),

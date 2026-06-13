@@ -16,7 +16,14 @@ export interface RunCliOptions {
   /** Hard timeout in ms. Default: 10 minutes. */
   timeoutMs?: number;
   signal?: AbortSignal;
+  /** Raw stdout chunks, as they arrive (use for plain-text CLIs that stream the answer). */
   onChunk?: (text: string) => void;
+  /**
+   * Complete stdout lines, as they arrive (use for line-delimited JSON streams
+   * like `claude --output-format stream-json`). The trailing partial line is
+   * flushed when the process ends.
+   */
+  onLine?: (line: string) => void;
 }
 
 export interface RunCliResult {
@@ -37,7 +44,19 @@ export async function runCli(opts: RunCliOptions): Promise<RunCliResult> {
   return new Promise((resolve) => {
     let stdout = '';
     let stderr = '';
+    let lineBuf = '';
     let settled = false;
+
+    const pumpLines = () => {
+      if (!opts.onLine) return;
+      let nl = lineBuf.indexOf('\n');
+      while (nl !== -1) {
+        const line = lineBuf.slice(0, nl);
+        lineBuf = lineBuf.slice(nl + 1);
+        if (line.trim()) opts.onLine(line);
+        nl = lineBuf.indexOf('\n');
+      }
+    };
 
     const child = spawn(opts.cmd, opts.args, {
       cwd: opts.cwd,
@@ -48,6 +67,9 @@ export async function runCli(opts: RunCliOptions): Promise<RunCliResult> {
     const finish = (partial: Partial<RunCliResult> & { ok: boolean }) => {
       if (settled) return;
       settled = true;
+      // Flush any trailing partial line (the final JSON event often has no \n yet).
+      if (opts.onLine && lineBuf.trim()) opts.onLine(lineBuf);
+      lineBuf = '';
       clearTimeout(timer);
       opts.signal?.removeEventListener('abort', onAbort);
       resolve({
@@ -74,6 +96,10 @@ export async function runCli(opts: RunCliOptions): Promise<RunCliResult> {
       const text = buf.toString('utf8');
       stdout += text;
       opts.onChunk?.(text);
+      if (opts.onLine) {
+        lineBuf += text;
+        pumpLines();
+      }
     });
     child.stderr.on('data', (buf: Buffer) => {
       stderr += buf.toString('utf8');

@@ -111,7 +111,7 @@ async function loadSession(): Promise<JackSession> {
     fail('no workers available. Run `jack doctor` to see what is missing.');
   }
   const history = await SessionHistory.load(config.runsDir);
-  const brain = resolveBrain(registry, config.brain);
+  const brain = resolveBrain(registry, config.brain, { model: config.brainModel });
   return {
     config,
     registry,
@@ -127,7 +127,9 @@ function seconds(ms?: number): string {
 
 /** Run one task: history context in, exchange recorded out. */
 async function executeTask(prompt: string, session: JackSession): Promise<boolean> {
-  const brain = resolveBrain(session.registry, session.brainId);
+  const brain = resolveBrain(session.registry, session.brainId, {
+    model: session.config.brainModel,
+  });
   const store = await RunStore.create(session.config.runsDir, newRunId());
   const task = {
     id: store.runId,
@@ -141,6 +143,13 @@ async function executeTask(prompt: string, session: JackSession): Promise<boolea
   progress.start();
   progress.spin('plan', `planning${brain ? dim(` (brain: ${brain.workerId})`) : ''}…`);
 
+  // Live streaming: only for a single-subtask plan (the common case). With one
+  // subtask the streamed tokens ARE the final answer, so we print them as they
+  // arrive and skip re-printing the report. Parallel multi-subtask output would
+  // interleave into garbage, so there we keep the progress block + final report.
+  let streamSingle = false;
+  let streamStarted = false;
+
   const record = await orchestrate(task, {
     registry: session.registry,
     store,
@@ -151,6 +160,7 @@ async function executeTask(prompt: string, session: JackSession): Promise<boolea
     degraded: session.degraded,
     events: {
       onPlan: (plan) => {
+        streamSingle = plan.subtasks.length === 1;
         progress.info('plan', dim(`plan: ${plan.subtasks.length} subtask(s)`));
         // One live line per subtask, queued until dispatched.
         for (const s of plan.subtasks) {
@@ -158,13 +168,24 @@ async function executeTask(prompt: string, session: JackSession): Promise<boolea
         }
       },
       onDispatch: (subtask, decision, attempt) => {
+        if (streamStarted) return; // already streaming the answer; don't redraw
         const suffix = attempt > 1 ? yellow(` (attempt ${attempt}, falling back)`) : '';
         progress.spin(
           subtask.id,
           `${subtask.id} ${dim(`[${subtask.capability}]`)} → ${bold(decision.workerId)}${suffix}`,
         );
       },
+      onChunk: (_subtaskId, text) => {
+        if (!streamSingle) return;
+        if (!streamStarted) {
+          streamStarted = true;
+          progress.stop(); // freeze the plan/dispatch block above the answer
+          process.stdout.write('\n');
+        }
+        process.stdout.write(text);
+      },
       onSubtaskDone: (outcome) => {
+        if (streamStarted) return; // streamed live already — no status churn
         const line = `${outcome.subtaskId} ← ${outcome.workerId}${dim(seconds(outcome.result.usage?.ms))}`;
         if (outcome.result.ok) progress.ok(outcome.subtaskId, line);
         else progress.err(outcome.subtaskId, `${line} ${red(outcome.result.error ?? 'failed')}`);
@@ -172,7 +193,8 @@ async function executeTask(prompt: string, session: JackSession): Promise<boolea
     },
   }).finally(() => progress.stop());
 
-  console.log(`\n${renderMarkdown(record.report)}`);
+  if (streamStarted) process.stdout.write('\n');
+  else console.log(`\n${renderMarkdown(record.report)}`);
   console.log(
     dim(
       `\n  done in ${((Date.now() - startedAt) / 1000).toFixed(1)}s — run ${store.runId} (${store.dir})`,
@@ -235,7 +257,7 @@ async function cmdDoctor(): Promise<void> {
     console.log(dim('  (none — install claude/codex/gemini or start Ollama/LM Studio)'));
   }
 
-  const brain = resolveBrain(registry, config.brain);
+  const brain = resolveBrain(registry, config.brain, { model: config.brainModel });
   console.log(
     `\n${bold('Brain:')} ${brain ? brain.workerId : 'none (single-subtask fallback mode)'}`,
   );
@@ -299,7 +321,7 @@ async function cmdBrain(workerId?: string): Promise<void> {
   const config = await loadConfig();
   const { registry } = await buildRegistry(config);
   if (!workerId) {
-    const brain = resolveBrain(registry, config.brain);
+    const brain = resolveBrain(registry, config.brain, { model: config.brainModel });
     console.log(`Brain: ${bold(brain ? brain.workerId : 'none')}`);
     console.log(
       dim(
