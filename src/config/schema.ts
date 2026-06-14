@@ -43,6 +43,12 @@ export const jackConfigSchema = z.object({
       preferTier: z.enum(['free-local', 'subscription', 'paid-api']).default('free-local'),
       maxConcurrency: z.number().int().positive().default(3),
       maxAttemptsPerSubtask: z.number().int().positive().default(3),
+      /**
+       * Quality gate: the brain scores each worker's output 0–1; below this bar
+       * Jack escalates to the next (stronger) worker. 0 disables it. Skipped for
+       * trivially-simple prompts to keep the fast path fast.
+       */
+      qualityBar: z.number().min(0).max(1).default(0.7),
     })
     .default({}),
   runsDir: z.string().default('./jack-runs'),

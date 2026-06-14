@@ -221,6 +221,113 @@ describe('orchestrate', () => {
     expect(record.report).toBe('here are some news APIs');
   });
 
+  // A non-simple, single-line, >30-word prompt: not a fast-path "simple" task,
+  // so the quality gate is allowed to run on it.
+  const longPrompt =
+    'Provide a detailed structured overview of the main architectural considerations involved when designing a resilient distributed task orchestration system that must remain correct under partial failures across many independent heterogeneous worker processes today';
+
+  /** Brain that plans a single `reason` subtask and judges with a fixed score. */
+  const judgingBrain = (score: number) =>
+    new Brain(
+      new MockWorker({
+        id: 'brain',
+        respond: (inv) => {
+          if (inv.prompt.includes('Decompose')) {
+            return {
+              ok: true,
+              text: JSON.stringify({
+                subtasks: [{ id: 's1', prompt: longPrompt, capability: 'reason' }],
+              }),
+            };
+          }
+          if (inv.prompt.includes('quality gate')) {
+            return { ok: true, text: JSON.stringify({ score, reason: 'judged' }) };
+          }
+          return { ok: true, text: 'synthesis' };
+        },
+      }),
+    );
+
+  it('escalates to a stronger worker when the first output scores below the bar', async () => {
+    const registry = new WorkerRegistry();
+    const local = new MockWorker({
+      id: 'local',
+      costTier: 'free-local',
+      respond: () => ({ ok: true, text: 'weak answer' }),
+    });
+    const sub = new MockWorker({
+      id: 'sub',
+      costTier: 'subscription',
+      respond: () => ({ ok: true, text: 'strong answer' }),
+    });
+    registry.register(local);
+    registry.register(sub);
+
+    const record = await orchestrate(
+      { id: 't', prompt: longPrompt, cwd: '/tmp' },
+      { ...baseOpts(registry, judgingBrain(0.2)), qualityBar: 0.7 },
+    );
+
+    expect(record.outcomes[0]?.workerId).toBe('sub');
+    expect(record.outcomes[0]?.attempts).toBe(2);
+    expect(record.report).toBe('strong answer');
+    expect(local.invocations).toHaveLength(1);
+    expect(sub.invocations).toHaveLength(1);
+  });
+
+  it('keeps the cheap worker when its output passes the bar', async () => {
+    const registry = new WorkerRegistry();
+    const local = new MockWorker({
+      id: 'local',
+      costTier: 'free-local',
+      respond: () => ({ ok: true, text: 'great answer' }),
+    });
+    const sub = new MockWorker({
+      id: 'sub',
+      costTier: 'subscription',
+      respond: () => ({ ok: true, text: 'never reached' }),
+    });
+    registry.register(local);
+    registry.register(sub);
+
+    const record = await orchestrate(
+      { id: 't', prompt: longPrompt, cwd: '/tmp' },
+      { ...baseOpts(registry, judgingBrain(0.9)), qualityBar: 0.7 },
+    );
+
+    expect(record.outcomes[0]?.workerId).toBe('local');
+    expect(record.outcomes[0]?.score).toBe(0.9);
+    expect(record.report).toBe('great answer');
+    expect(sub.invocations).toHaveLength(0); // never escalated
+  });
+
+  it('skips the quality gate for trivially-simple prompts (keeps the fast path)', async () => {
+    const registry = new WorkerRegistry();
+    const local = new MockWorker({
+      id: 'local',
+      costTier: 'free-local',
+      respond: () => ({ ok: true, text: 'hi' }),
+    });
+    const sub = new MockWorker({
+      id: 'sub',
+      costTier: 'subscription',
+      respond: () => ({ ok: true, text: 'never reached' }),
+    });
+    registry.register(local);
+    registry.register(sub);
+
+    // `task` is "say hello" → looksSimple → gate must not run even with a bar set.
+    const record = await orchestrate(task, {
+      ...baseOpts(registry, judgingBrain(0.1)),
+      qualityBar: 0.7,
+    });
+
+    expect(record.outcomes[0]?.workerId).toBe('local');
+    expect(record.outcomes[0]?.attempts).toBe(1);
+    expect(record.outcomes[0]?.score).toBeUndefined();
+    expect(sub.invocations).toHaveLength(0);
+  });
+
   it('fails cleanly when there is no worker at all for a subtask', async () => {
     const registry = new WorkerRegistry();
     // A single web-only worker that fails: no generalist exists to rescue it.

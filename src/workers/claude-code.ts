@@ -39,7 +39,20 @@ export interface ClaudeCodeWorkerConfig {
   model?: string;
   /** Pass --strict-mcp-config so no MCP servers spawn (faster cold start). */
   strictMcpConfig?: boolean;
+  /**
+   * Replace the default Claude Code agent persona via --system-prompt. Needed
+   * for brain duties: the agent persona otherwise refuses "act as a JSON-only
+   * X" instructions and answers conversationally, breaking JSON parsing.
+   */
+  systemPrompt?: string;
 }
+
+/**
+ * System prompt for brain duties (plan/route/judge/synthesize). Strips the
+ * coding-agent persona so the model just follows each message's instructions.
+ */
+const BRAIN_SYSTEM_PROMPT =
+  "You are Jack's lightweight planning, routing and evaluation core. Do exactly what each message asks, nothing more. When a message asks for JSON, reply with only the JSON object — no prose, no markdown fences. When it asks for a written answer, reply with just that answer.";
 
 export class ClaudeCodeWorker implements Worker {
   readonly id = 'claude-code';
@@ -53,6 +66,7 @@ export class ClaudeCodeWorker implements Worker {
   private readonly timeoutMs?: number;
   private readonly model?: string;
   private readonly strictMcpConfig: boolean;
+  private readonly systemPrompt?: string;
 
   constructor(config: ClaudeCodeWorkerConfig = {}) {
     this.command = config.command ?? 'claude';
@@ -60,6 +74,7 @@ export class ClaudeCodeWorker implements Worker {
     this.timeoutMs = config.timeoutMs;
     this.model = config.model;
     this.strictMcpConfig = config.strictMcpConfig ?? false;
+    this.systemPrompt = config.systemPrompt;
   }
 
   /**
@@ -74,6 +89,7 @@ export class ClaudeCodeWorker implements Worker {
       timeoutMs: this.timeoutMs,
       model: model ?? this.model,
       strictMcpConfig: true,
+      systemPrompt: BRAIN_SYSTEM_PROMPT,
     });
   }
 
@@ -92,6 +108,7 @@ export class ClaudeCodeWorker implements Worker {
       '--verbose',
       ...(this.model ? ['--model', this.model] : []),
       ...(this.strictMcpConfig ? ['--strict-mcp-config'] : []),
+      ...(this.systemPrompt ? ['--system-prompt', this.systemPrompt] : []),
       ...this.extraArgs,
     ];
 

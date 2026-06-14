@@ -2,11 +2,12 @@
  * The run loop: plan → dispatch (in dependency waves, with fallback chains)
  * → collect → synthesize → persist.
  */
+import { z } from 'zod';
 import type { Brain } from '../brain/brain.js';
-import { synthesisPrompt } from '../brain/prompts.js';
+import { judgePrompt, synthesisPrompt } from '../brain/prompts.js';
 import type { WorkerRegistry } from '../workers/registry.js';
 import type { CostTier, Worker, WorkerResult } from '../workers/worker.js';
-import { planTask } from './planner.js';
+import { looksSimple, planTask } from './planner.js';
 import { routeSubtask } from './router.js';
 import type { RunStore } from './run-store.js';
 import type { Plan, RouterDecision, RunRecord, Subtask, SubtaskOutcome, Task } from './types.js';
@@ -16,6 +17,8 @@ export interface OrchestratorEvents {
   onDispatch?: (subtask: Subtask, decision: RouterDecision, attempt: number) => void;
   onSubtaskDone?: (outcome: SubtaskOutcome) => void;
   onChunk?: (subtaskId: string, text: string) => void;
+  /** A worker's output was scored by the quality gate. accepted=false → escalating. */
+  onJudge?: (subtaskId: string, score: number, accepted: boolean) => void;
 }
 
 export interface OrchestratorOptions {
@@ -25,6 +28,12 @@ export interface OrchestratorOptions {
   preferTier: CostTier;
   maxConcurrency: number;
   maxAttemptsPerSubtask: number;
+  /**
+   * Quality gate: after a worker succeeds, the brain scores the output 0–1.
+   * Below this bar, Jack escalates to the next (stronger) worker in the chain.
+   * 0 disables the gate (accept the first successful worker, as before).
+   */
+  qualityBar?: number;
   events?: OrchestratorEvents;
   /**
    * Shared across runs in a session: workers that failed with an auth/quota
@@ -39,6 +48,24 @@ export function isAuthOrQuotaError(error?: string): boolean {
   return /\b(401|403|429|auth|authenticat|unauthor|login|sign ?in|credential|api key|token|quota|rate.?limit|billing|subscription|payment|forbidden|expired|not logged)/i.test(
     error,
   );
+}
+
+const judgeSchema = z.object({ score: z.coerce.number(), reason: z.string().optional() });
+
+/** Score a worker's output via the brain. Returns undefined if the judge is unreachable. */
+async function judgeOutput(
+  brain: Brain,
+  subtask: Subtask,
+  text: string,
+): Promise<{ score: number; reason: string } | undefined> {
+  try {
+    const parsed = judgeSchema.parse(
+      await brain.askJson<unknown>(judgePrompt(subtask.prompt, text, subtask.capability)),
+    );
+    return { score: Math.max(0, Math.min(1, parsed.score)), reason: parsed.reason ?? '' };
+  } catch {
+    return undefined;
+  }
 }
 
 /** Group subtasks into topological waves; subtasks in a wave run in parallel. */
@@ -174,8 +201,17 @@ async function executeSubtask(
   let attempts = 0;
   let lastResult: WorkerResult = { ok: false, text: '', error: 'no worker attempted' };
   let lastWorkerId = effectiveDecision.workerId;
+  // The output we'll keep: the most recent successful worker (the chain runs
+  // cheap→strong, so escalating always moves to a stronger worker).
+  let accepted: { result: WorkerResult; workerId: string; score?: number } | undefined;
 
-  for (const worker of chain) {
+  const qualityBar = opts.qualityBar ?? 0;
+  // Skip the gate for trivially-simple prompts — it would only add latency.
+  const gateOn = !!opts.brain && qualityBar > 0 && !looksSimple(subtask.prompt);
+
+  for (let i = 0; i < chain.length; i += 1) {
+    const worker = chain[i];
+    if (!worker) break;
     attempts += 1;
     lastWorkerId = worker.id;
     opts.events?.onDispatch?.(subtask, effectiveDecision, attempts);
@@ -183,7 +219,7 @@ async function executeSubtask(
       subtask.id,
       `\n=== attempt ${attempts} | worker ${worker.id} ===\n`,
     );
-    lastResult = await worker.invoke({
+    const result = await worker.invoke({
       prompt,
       cwd,
       onChunk: (text) => {
@@ -191,23 +227,51 @@ async function executeSubtask(
         void opts.store.appendSubtaskLog(subtask.id, text);
       },
     });
-    if (lastResult.ok && lastResult.text.length > 0) break;
-    // Remember bad-subscription / quota failures so later subtasks skip ahead.
-    if (isAuthOrQuotaError(lastResult.error)) {
-      degraded.add(worker.id);
-      await opts.store.appendSubtaskLog(
-        subtask.id,
-        `\n[jack] ${worker.id} looks unauthorized/over quota — falling back.\n`,
-      );
+    lastResult = result;
+
+    if (!result.ok || result.text.length === 0) {
+      // Remember bad-subscription / quota failures so later subtasks skip ahead.
+      if (isAuthOrQuotaError(result.error)) {
+        degraded.add(worker.id);
+        await opts.store.appendSubtaskLog(
+          subtask.id,
+          `\n[jack] ${worker.id} looks unauthorized/over quota — falling back.\n`,
+        );
+      }
+      continue;
     }
+
+    // A successful result — keep it as the running candidate.
+    accepted = { result, workerId: worker.id };
+
+    // Commit to it unless the quality gate is on AND there's a stronger worker
+    // left to escalate to within the attempt budget.
+    const moreToTry = i < chain.length - 1;
+    if (!gateOn || !moreToTry || attempts >= opts.maxAttemptsPerSubtask || !opts.brain) break;
+
+    const verdict = await judgeOutput(opts.brain, subtask, result.text);
+    if (!verdict) break; // judge unreachable → keep this answer rather than block
+    accepted.score = verdict.score;
+    await opts.store.appendSubtaskLog(
+      subtask.id,
+      `\n[jack] quality ${verdict.score.toFixed(2)} — ${verdict.reason}\n`,
+    );
+    const pass = verdict.score >= qualityBar;
+    opts.events?.onJudge?.(subtask.id, verdict.score, pass);
+    if (pass) break;
+    await opts.store.appendSubtaskLog(
+      subtask.id,
+      `\n[jack] below quality bar (${qualityBar}) — escalating.\n`,
+    );
   }
 
   const outcome: SubtaskOutcome = {
     subtaskId: subtask.id,
-    workerId: lastWorkerId,
+    workerId: accepted?.workerId ?? lastWorkerId,
     decision: effectiveDecision,
-    result: lastResult,
+    result: accepted?.result ?? lastResult,
     attempts,
+    score: accepted?.score,
   };
   await opts.store.saveOutcome(outcome);
   opts.events?.onSubtaskDone?.(outcome);

@@ -157,6 +157,7 @@ async function executeTask(prompt: string, session: JackSession): Promise<boolea
     preferTier: session.config.routing.preferTier,
     maxConcurrency: session.config.routing.maxConcurrency,
     maxAttemptsPerSubtask: session.config.routing.maxAttemptsPerSubtask,
+    qualityBar: session.config.routing.qualityBar,
     degraded: session.degraded,
     events: {
       onPlan: (plan) => {
@@ -184,9 +185,21 @@ async function executeTask(prompt: string, session: JackSession): Promise<boolea
         }
         process.stdout.write(text);
       },
+      onJudge: (subtaskId, score, accepted) => {
+        if (accepted) return;
+        if (streamStarted) {
+          process.stdout.write(dim(`\n\n  ↑ quality ${score.toFixed(2)} — escalating…\n\n`));
+        } else {
+          progress.spin(
+            subtaskId,
+            `${subtaskId} ${dim(`quality ${score.toFixed(2)} — escalating to a stronger worker…`)}`,
+          );
+        }
+      },
       onSubtaskDone: (outcome) => {
         if (streamStarted) return; // streamed live already — no status churn
-        const line = `${outcome.subtaskId} ← ${outcome.workerId}${dim(seconds(outcome.result.usage?.ms))}`;
+        const q = outcome.score !== undefined ? dim(` q${outcome.score.toFixed(2)}`) : '';
+        const line = `${outcome.subtaskId} ← ${outcome.workerId}${q}${dim(seconds(outcome.result.usage?.ms))}`;
         if (outcome.result.ok) progress.ok(outcome.subtaskId, line);
         else progress.err(outcome.subtaskId, `${line} ${red(outcome.result.error ?? 'failed')}`);
       },

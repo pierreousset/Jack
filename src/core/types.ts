@@ -38,6 +38,8 @@ export interface SubtaskOutcome {
   decision: RouterDecision;
   result: WorkerResult;
   attempts: number;
+  /** Quality-gate score (0–1) of the accepted output, when the gate ran. */
+  score?: number;
 }
 
 export type RunStatus = 'running' | 'done' | 'failed';

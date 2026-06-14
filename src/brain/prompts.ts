@@ -63,6 +63,30 @@ Respond with ONLY a JSON object, no markdown fences:
 {"workerId":"<one of the ids above>","reason":"one short sentence"}`;
 }
 
+export function judgePrompt(taskPrompt: string, output: string, capability: Capability): string {
+  return `You are Jack's quality gate. Judge how well the WORKER OUTPUT satisfies the TASK. Be strict and concise.
+
+Task (capability: ${capability}):
+"""
+${taskPrompt}
+"""
+
+Worker output:
+"""
+${output}
+"""
+
+Score from 0.0 to 1.0:
+- 1.0 = fully correct, complete, directly usable
+- 0.7 = good, only minor gaps
+- 0.5 = partially useful but incomplete or uncertain
+- 0.0 = wrong, empty, evasive, or off-topic
+If the output refuses, stalls, hallucinates, or stays vague where specifics were required, score below 0.5.
+
+Respond with ONLY a JSON object, no markdown fences:
+{"score":0.0,"reason":"one short sentence"}`;
+}
+
 export function synthesisPrompt(
   taskPrompt: string,
   outputs: Array<{ subtaskId: string; text: string }>,
