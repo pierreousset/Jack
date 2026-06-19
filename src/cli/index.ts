@@ -47,6 +47,7 @@ Usage:
   jack                 Interactive mode — Jack asks what you want
   jack "<task>"        Run a task (plan → route → execute → report)
   jack cook ["<topic>"]  Autonomously work through the backlog (or a topic)
+  jack live [cycles]   Continuous self-improving loop over the backlog
   jack add "<topic>"   Add a topic to the backlog for cook
   jack backlog         Show the backlog
   jack watch           Research AI developments Jack could adopt → proposals
@@ -74,6 +75,7 @@ const REPL_HELP = `  Type a task and Jack will plan, route and run it.
     doctor      full environment check
     brain       show / change which AI Jack uses as his brain
     cook        autonomously work through the backlog (cook "<topic>" for one)
+    live        continuous self-improving loop over the backlog
     add "<t>"   add a topic to the backlog
     backlog     show the backlog
     watch       research AI developments Jack could adopt → proposals
@@ -91,6 +93,7 @@ const REPL_COMMANDS = [
   'doctor',
   'brain',
   'cook',
+  'live',
   'add',
   'backlog',
   'watch',
@@ -470,11 +473,77 @@ async function runCook(session: JackSession, topics: string[]): Promise<void> {
   const failedPart = failed > 0 ? red(`${failed} failed`) : '0 failed';
   const learnedPart = learned > 0 ? dim(`, ${learned} new lesson(s)`) : '';
   console.log(magenta(`\n🍳 cook done — ${green(`${done} ok`)}, ${failedPart}${learnedPart}`));
+
+  if (session.config.cook.autoImprove) await selfImprovePass(session);
+}
+
+/**
+ * One self-improvement pass: research (watch → proposals) and, if no experiment
+ * is already running, propose+apply a config tweak (tune). Chained after a cook
+ * batch so Jack improves himself while he works. Best-effort — never throws.
+ */
+async function selfImprovePass(session: JackSession): Promise<void> {
+  console.log(magenta('\n🔁 self-improvement pass…'));
+  const brain = resolveBrain(session.registry, session.brainId, {
+    model: session.config.brainModel,
+  });
+  if (!brain) return;
+
+  try {
+    const webWorker = session.registry.candidatesFor('web', session.config.routing.preferTier)[0];
+    const { proposals } = await runWatch({
+      brain,
+      webWorker,
+      setupSummary: describeSetup(session),
+      area: session.config.watch.area,
+    });
+    if (proposals.length > 0) {
+      const store = await ProposalStore.load(session.config.runsDir);
+      await store.add(proposals);
+      console.log(dim(`  🔭 ${proposals.length} new proposal(s) — see \`jack proposals\`.`));
+    }
+  } catch {
+    // research is optional
+  }
+
+  if (session.config.tuning.enabled && !session.tuning.active) {
+    try {
+      await runTune(session);
+    } catch {
+      // tuning is optional
+    }
+  }
 }
 
 async function cmdCook(topics: string[] = []): Promise<void> {
   const session = await loadSession();
   await runCook(session, topics);
+}
+
+/**
+ * Continuous mode: repeat cook batches (each with a self-improvement pass) until
+ * the backlog is empty or the cycle cap is hit. Bounded by live.maxCycles and
+ * cook.maxItems so it can't run away or drain quota. Ctrl+C stops it; add topics
+ * from another terminal with `jack add` and they're picked up next cycle.
+ */
+async function cmdLive(maxCyclesArg?: string): Promise<void> {
+  const session = await loadSession();
+  const max = Math.max(1, Number(maxCyclesArg) || session.config.live.maxCycles);
+  console.log(
+    magenta(`\n🔥 live mode — up to ${max} cycle(s) of ${session.config.cook.maxItems} topic(s).`) +
+      dim(' Ctrl+C to stop.'),
+  );
+
+  for (let cycle = 1; cycle <= max; cycle += 1) {
+    const backlog = await BacklogStore.load(session.config.runsDir);
+    if (backlog.pending().length === 0) {
+      console.log(dim('\n  backlog empty — nothing left to cook. Add topics with `jack add`.'));
+      break;
+    }
+    console.log(bold(`\n═══ cycle ${cycle}/${max} ═══`));
+    await runCook(session, []);
+  }
+  console.log(magenta('\n🔥 live: done.'));
 }
 
 async function cmdAdd(topic: string): Promise<void> {
@@ -808,6 +877,23 @@ async function cmdInteractive(): Promise<void> {
       console.log(`\n${magenta('🎩')} ${dim('Anything else?')}\n`);
       continue;
     }
+    if (input === 'live' || input.startsWith('live ')) {
+      const max = Math.max(
+        1,
+        Number(input.slice('live'.length).trim()) || session.config.live.maxCycles,
+      );
+      for (let cycle = 1; cycle <= max; cycle += 1) {
+        const backlog = await BacklogStore.load(session.config.runsDir);
+        if (backlog.pending().length === 0) {
+          console.log(dim('  backlog empty — add topics with `add "<topic>"`.'));
+          break;
+        }
+        console.log(bold(`\n═══ cycle ${cycle}/${max} ═══`));
+        await runCook(session, []);
+      }
+      console.log(`\n${magenta('🎩')} ${dim('Anything else?')}\n`);
+      continue;
+    }
     if (input.startsWith('add ')) {
       await cmdAdd(input.slice('add'.length).trim());
       continue;
@@ -883,6 +969,7 @@ async function main(): Promise<void> {
   if (first === 'history') return cmdHistory();
   if (first === 'learnings') return cmdLearnings(args[1] === 'clear');
   if (first === 'cook') return cmdCook(args.slice(1));
+  if (first === 'live') return cmdLive(args[1]);
   if (first === 'add') return cmdAdd(args.slice(1).join(' '));
   if (first === 'backlog') return cmdBacklog();
   if (first === 'watch') return cmdWatch();

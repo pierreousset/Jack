@@ -66,6 +66,15 @@ export const jackConfigSchema = z.object({
       maxItems: z.number().int().positive().default(5),
       /** Stop the cook after this many consecutive failed topics. */
       stopAfterFailures: z.number().int().positive().default(2),
+      /** After a cook batch, run one watch+tune self-improvement pass. */
+      autoImprove: z.boolean().default(true),
+    })
+    .default({}),
+  /** Continuous mode (`jack live`): repeat cook batches on its own. */
+  live: z
+    .object({
+      /** Max cook cycles per `jack live` invocation (quota/runaway guard). */
+      maxCycles: z.number().int().positive().default(3),
     })
     .default({}),
   /** AI watch (`jack watch`): research developments Jack could adopt. */
