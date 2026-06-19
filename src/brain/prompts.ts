@@ -13,7 +13,7 @@ export const CAPABILITIES: Capability[] = [
   'web',
 ];
 
-export function planningPrompt(taskPrompt: string, context?: string): string {
+export function planningPrompt(taskPrompt: string, context?: string, guidance?: string): string {
   const contextSection = context
     ? `
 Recent conversation between the user and Jack (the task below may refer to it — resolve any references like "it"/"the previous one" so subtask prompts are explicit):
@@ -22,7 +22,14 @@ ${context}
 """
 `
     : '';
+  const guidanceSection = guidance
+    ? `
+Lessons from past runs — apply them when decomposing:
+${guidance}
+`
+    : '';
   return `You are Jack, an AI task orchestrator. Decompose the user's task into the SMALLEST useful number of subtasks (1 is fine for simple tasks, rarely more than 4).
+${guidanceSection}
 
 Each subtask gets a capability tag among: ${CAPABILITIES.join(', ')}.
 - "code-edit": must read/modify files in the working directory
@@ -85,6 +92,35 @@ If the output refuses, stalls, hallucinates, or stays vague where specifics were
 
 Respond with ONLY a JSON object, no markdown fences:
 {"score":0.0,"reason":"one short sentence"}`;
+}
+
+export function reflectionPrompt(
+  taskPrompt: string,
+  whatHappened: string,
+  context?: string,
+): string {
+  const contextSection = context
+    ? `
+Recent conversation (for reference):
+"""
+${context}
+"""
+`
+    : '';
+  return `You are Jack reviewing one of your own runs that did NOT go smoothly (it failed, or a weak first answer had to be escalated). Extract ONE concrete, reusable lesson that would make the NEXT run on a similar task go better — about decomposition, which worker to trust, or how to phrase the work. Make it a directive Jack can act on, not a vague platitude. If there is genuinely nothing useful to learn, say so with an empty insight.
+${contextSection}
+Task:
+"""
+${taskPrompt}
+"""
+
+What happened:
+"""
+${whatHappened}
+"""
+
+Respond with ONLY a JSON object, no markdown fences:
+{"insight":"one actionable sentence, or empty string if nothing useful"}`;
 }
 
 export function synthesisPrompt(

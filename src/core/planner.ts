@@ -90,7 +90,7 @@ export async function planTask(task: Task, brain?: Brain): Promise<Plan> {
   }
   try {
     const response = planResponseSchema.parse(
-      await brain.askJson<unknown>(planningPrompt(task.prompt, task.context)),
+      await brain.askJson<unknown>(planningPrompt(task.prompt, task.context, task.guidance)),
     );
     return {
       taskId: task.id,

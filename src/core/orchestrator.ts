@@ -115,12 +115,16 @@ function buildSubtaskPrompt(
   subtask: Subtask,
   outputs: Map<string, string>,
   conversationContext?: string,
+  guidance?: string,
 ): string {
   const parts: string[] = [];
   if (conversationContext) {
     parts.push(
       `Background — recent conversation between the user and the orchestrator (reference only; the task below is what matters):\n${conversationContext}\n---`,
     );
+  }
+  if (guidance) {
+    parts.push(`Guidance from past experience — keep these in mind:\n${guidance}\n---`);
   }
   parts.push(subtask.prompt);
   const deps = subtask.dependsOn ?? [];
@@ -204,6 +208,7 @@ async function executeSubtask(
   // The output we'll keep: the most recent successful worker (the chain runs
   // cheap→strong, so escalating always moves to a stronger worker).
   let accepted: { result: WorkerResult; workerId: string; score?: number } | undefined;
+  let escalated = false;
 
   const qualityBar = opts.qualityBar ?? 0;
   // Skip the gate for trivially-simple prompts — it would only add latency.
@@ -259,6 +264,7 @@ async function executeSubtask(
     const pass = verdict.score >= qualityBar;
     opts.events?.onJudge?.(subtask.id, verdict.score, pass);
     if (pass) break;
+    escalated = true;
     await opts.store.appendSubtaskLog(
       subtask.id,
       `\n[jack] below quality bar (${qualityBar}) — escalating.\n`,
@@ -272,6 +278,7 @@ async function executeSubtask(
     result: accepted?.result ?? lastResult,
     attempts,
     score: accepted?.score,
+    escalated: escalated || undefined,
   };
   await opts.store.saveOutcome(outcome);
   opts.events?.onSubtaskDone?.(outcome);
@@ -334,7 +341,7 @@ export async function orchestrate(task: Task, opts: OrchestratorOptions): Promis
 
   for (const wave of topologicalWaves(plan.subtasks)) {
     const waveOutcomes = await mapLimit(wave, opts.maxConcurrency, (subtask) => {
-      const prompt = buildSubtaskPrompt(subtask, outputs, task.context);
+      const prompt = buildSubtaskPrompt(subtask, outputs, task.context, task.guidance);
       return executeSubtask(subtask, prompt, task.cwd, opts);
     });
     for (const outcome of waveOutcomes) {

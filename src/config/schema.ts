@@ -51,6 +51,14 @@ export const jackConfigSchema = z.object({
       qualityBar: z.number().min(0).max(1).default(0.7),
     })
     .default({}),
+  /** Self-improvement loop: reflect on bad runs, store lessons, reuse them. */
+  selfImprove: z
+    .object({
+      enabled: z.boolean().default(true),
+      /** How many recent lessons to inject as guidance into each run. */
+      maxGuidance: z.number().int().min(0).default(5),
+    })
+    .default({}),
   runsDir: z.string().default('./jack-runs'),
 });
 

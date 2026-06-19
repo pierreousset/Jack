@@ -6,6 +6,8 @@ export interface Task {
   cwd: string;
   /** Recent conversation context, threaded into planning and worker prompts. */
   context?: string;
+  /** Lessons learned from past runs, injected so Jack improves over time. */
+  guidance?: string;
 }
 
 export interface Subtask {
@@ -40,6 +42,8 @@ export interface SubtaskOutcome {
   attempts: number;
   /** Quality-gate score (0–1) of the accepted output, when the gate ran. */
   score?: number;
+  /** True if the quality gate forced an escalation to a stronger worker. */
+  escalated?: boolean;
 }
 
 export type RunStatus = 'running' | 'done' | 'failed';

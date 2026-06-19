@@ -17,7 +17,9 @@ import { createInterface } from 'node:readline/promises';
 import { resolveBrain } from '../brain/brain.js';
 import { buildRegistry, loadConfig } from '../config/load.js';
 import { saveBrainChoice, savedBrainChoice } from '../config/persist.js';
+import { LearningStore } from '../core/learnings.js';
 import { orchestrate } from '../core/orchestrator.js';
+import { reflectOnRun } from '../core/reflect.js';
 import { RunStore, newRunId } from '../core/run-store.js';
 import { SessionHistory } from '../core/session.js';
 import type { WorkerRegistry } from '../workers/registry.js';
@@ -45,6 +47,7 @@ Usage:
   jack workers         List registered workers
   jack brain [id]      Show or set which worker Jack uses as his brain
   jack history         Show this project's conversation history
+  jack learnings       Show what Jack has learned (add "clear" to reset)
   jack --version       Print version
   jack --help          Show this help
 
@@ -62,12 +65,23 @@ const REPL_HELP = `  Type a task and Jack will plan, route and run it.
     doctor      full environment check
     brain       show / change which AI Jack uses as his brain
     history     show the conversation so far
+    learnings   show what Jack has learned (add "clear" to reset)
     clear       forget the conversation history
     help        this help
     exit        leave (also: quit, Ctrl+C, Ctrl+D)
 `;
 
-const REPL_COMMANDS = ['workers', 'doctor', 'brain', 'history', 'clear', 'help', 'exit', 'quit'];
+const REPL_COMMANDS = [
+  'workers',
+  'doctor',
+  'brain',
+  'history',
+  'learnings',
+  'clear',
+  'help',
+  'exit',
+  'quit',
+];
 
 const REPL_HISTORY_PATH = join(homedir(), '.jack', 'repl_history');
 
@@ -99,6 +113,7 @@ interface JackSession {
   config: Awaited<ReturnType<typeof loadConfig>>;
   registry: WorkerRegistry;
   history: SessionHistory;
+  learnings: LearningStore;
   brainId: string;
   /** Workers that hit auth/quota errors this session — deprioritized on later runs. */
   degraded: Set<string>;
@@ -111,11 +126,13 @@ async function loadSession(): Promise<JackSession> {
     fail('no workers available. Run `jack doctor` to see what is missing.');
   }
   const history = await SessionHistory.load(config.runsDir);
+  const learnings = await LearningStore.load(config.runsDir);
   const brain = resolveBrain(registry, config.brain, { model: config.brainModel });
   return {
     config,
     registry,
     history,
+    learnings,
     brainId: brain?.workerId ?? config.brain,
     degraded: new Set<string>(),
   };
@@ -131,11 +148,15 @@ async function executeTask(prompt: string, session: JackSession): Promise<boolea
     model: session.config.brainModel,
   });
   const store = await RunStore.create(session.config.runsDir, newRunId());
+  const selfImprove = session.config.selfImprove;
   const task = {
     id: store.runId,
     prompt,
     cwd: process.cwd(),
     context: session.history.contextBlock(),
+    guidance: selfImprove.enabled
+      ? session.learnings.guidanceBlock(undefined, selfImprove.maxGuidance)
+      : undefined,
   };
 
   const startedAt = Date.now();
@@ -231,6 +252,16 @@ async function executeTask(prompt: string, session: JackSession): Promise<boolea
     ok: record.status !== 'failed',
   });
 
+  // Auto-critique: if the run failed or had to escalate, learn one lesson from
+  // it and keep it for next time. Best-effort — never blocks the answer.
+  if (selfImprove.enabled) {
+    const learning = await reflectOnRun(record, brain);
+    if (learning) {
+      await session.learnings.add(learning);
+      console.log(magenta(`\n  💡 learned: ${dim(learning.insight)}`));
+    }
+  }
+
   if (record.status === 'failed') {
     console.error(red(`jack: run failed — see ${store.dir}`));
     return false;
@@ -299,6 +330,26 @@ async function cmdHistory(): Promise<void> {
     const answer = entry.answer.length > 200 ? `${entry.answer.slice(0, 200)} […]` : entry.answer;
     console.log(`${dim(entry.at)} ${bold('you:')} ${entry.task}`);
     console.log(`${' '.repeat(25)}${magenta('jack:')} ${answer.replace(/\n/g, ' ')}\n`);
+  }
+}
+
+async function cmdLearnings(clear = false): Promise<void> {
+  const config = await loadConfig();
+  const store = await LearningStore.load(config.runsDir);
+  if (clear) {
+    await store.clear();
+    console.log(dim('  learnings cleared.'));
+    return;
+  }
+  const entries = store.all();
+  if (entries.length === 0) {
+    console.log(dim('(Jack has not learned anything yet — lessons appear after a run goes badly)'));
+    return;
+  }
+  console.log(bold(`What Jack has learned (${entries.length}):`));
+  for (const e of entries.slice(-20)) {
+    const tag = e.capability ? dim(` [${e.capability}]`) : '';
+    console.log(`  ${magenta('•')} ${e.insight}${tag}`);
   }
 }
 
@@ -396,6 +447,9 @@ async function cmdInteractive(): Promise<void> {
       `  ${dim(`I remember our last ${Math.min(session.history.length, 50)} exchange(s) — follow-ups welcome.`)}`,
     );
   }
+  if (session.learnings.length > 0) {
+    console.log(`  ${dim(`I'm carrying ${session.learnings.length} lesson(s) from past runs.`)}`);
+  }
 
   // First start: ask which AI Jack should use as his brain, then remember it.
   const saved = await savedBrainChoice();
@@ -431,6 +485,12 @@ async function cmdInteractive(): Promise<void> {
     }
     if (input === 'history') {
       await cmdHistory();
+      continue;
+    }
+    if (input === 'learnings' || input === 'learnings clear') {
+      const clear = input.endsWith('clear');
+      await cmdLearnings(clear);
+      if (clear) session.learnings = await LearningStore.load(session.config.runsDir);
       continue;
     }
     if (input === 'clear') {
@@ -489,6 +549,7 @@ async function main(): Promise<void> {
   if (first === 'doctor') return cmdDoctor();
   if (first === 'workers') return cmdWorkers();
   if (first === 'history') return cmdHistory();
+  if (first === 'learnings') return cmdLearnings(args[1] === 'clear');
   if (first === 'brain') return cmdBrain(args[1]);
 
   // Everything else is treated as the task prompt.
