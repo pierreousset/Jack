@@ -19,6 +19,8 @@ export { reflectOnRun, shouldReflect } from './core/reflect.js';
 export { routeSubtask } from './core/router.js';
 export { RunStore, newRunId } from './core/run-store.js';
 export { SessionHistory } from './core/session.js';
+export { ProposalStore, runWatch } from './core/watch.js';
+export type { Proposal, ProposalKind, WatchParams } from './core/watch.js';
 export type {
   Plan,
   RouterDecision,

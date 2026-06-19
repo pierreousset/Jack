@@ -68,6 +68,16 @@ export const jackConfigSchema = z.object({
       stopAfterFailures: z.number().int().positive().default(2),
     })
     .default({}),
+  /** AI watch (`jack watch`): research developments Jack could adopt. */
+  watch: z
+    .object({
+      area: z
+        .string()
+        .default(
+          'LLM orchestration, agent self-improvement, small/local models, and prompt & routing techniques',
+        ),
+    })
+    .default({}),
   runsDir: z.string().default('./jack-runs'),
 });
 

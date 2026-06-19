@@ -123,6 +123,37 @@ Respond with ONLY a JSON object, no markdown fences:
 {"insight":"one actionable sentence, or empty string if nothing useful"}`;
 }
 
+export function watchResearchPrompt(area: string): string {
+  return `Search for NOTABLE, RECENT, CONCRETE developments (last few months) in: ${area}.
+Focus on things a multi-worker AI orchestrator could actually adopt: new or improved models (esp. small/local ones), agent techniques, routing/evaluation methods, prompting tricks, useful tools or CLIs.
+List the specific findings with a one-line "why it matters" each. Skip vague hype and anything you can't name concretely.`;
+}
+
+export function watchProposalPrompt(area: string, findings: string, setup: string): string {
+  return `You are Jack improving himself. Given recent AI developments and Jack's CURRENT setup, propose concrete, safe improvements Jack could make to his OWN system. Prefer cheap, low-risk changes (prompt/config tweaks) over big ones. Only propose things grounded in the findings or clearly useful for the setup. It is fine to return few or zero proposals.
+
+Focus area: ${area}
+
+Recent findings:
+"""
+${findings}
+"""
+
+Jack's current setup:
+"""
+${setup}
+"""
+
+Each proposal has:
+- "kind": one of model | worker | prompt | config | technique
+- "title": short
+- "rationale": why it helps Jack specifically (one sentence)
+- "action": the concrete change to make (one sentence)
+
+Respond with ONLY a JSON object, no markdown fences:
+{"proposals":[{"kind":"config","title":"...","rationale":"...","action":"..."}]}`;
+}
+
 export function synthesisPrompt(
   taskPrompt: string,
   outputs: Array<{ subtaskId: string; text: string }>,

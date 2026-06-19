@@ -23,6 +23,7 @@ import { orchestrate } from '../core/orchestrator.js';
 import { reflectOnRun } from '../core/reflect.js';
 import { RunStore, newRunId } from '../core/run-store.js';
 import { SessionHistory } from '../core/session.js';
+import { ProposalStore, runWatch } from '../core/watch.js';
 import type { WorkerRegistry } from '../workers/registry.js';
 import {
   MultiProgress,
@@ -47,6 +48,8 @@ Usage:
   jack cook ["<topic>"]  Autonomously work through the backlog (or a topic)
   jack add "<topic>"   Add a topic to the backlog for cook
   jack backlog         Show the backlog
+  jack watch           Research AI developments Jack could adopt → proposals
+  jack proposals       Show improvement proposals (add "clear" to reset)
   jack doctor          Detect installed CLIs and local model servers
   jack workers         List registered workers
   jack brain [id]      Show or set which worker Jack uses as his brain
@@ -71,6 +74,8 @@ const REPL_HELP = `  Type a task and Jack will plan, route and run it.
     cook        autonomously work through the backlog (cook "<topic>" for one)
     add "<t>"   add a topic to the backlog
     backlog     show the backlog
+    watch       research AI developments Jack could adopt → proposals
+    proposals   show improvement proposals (add "clear" to reset)
     history     show the conversation so far
     learnings   show what Jack has learned (add "clear" to reset)
     clear       forget the conversation history
@@ -85,6 +90,8 @@ const REPL_COMMANDS = [
   'cook',
   'add',
   'backlog',
+  'watch',
+  'proposals',
   'history',
   'learnings',
   'clear',
@@ -449,6 +456,83 @@ async function cmdBacklog(): Promise<void> {
   }
 }
 
+/** Compact description of Jack's setup, so watch proposals are relevant to him. */
+function describeSetup(session: JackSession): string {
+  const workers = session.registry
+    .all()
+    .map((w) => `${w.id} (${w.costTier})`)
+    .join(', ');
+  const r = session.config.routing;
+  const lessons = session.learnings
+    .all()
+    .slice(-3)
+    .map((l) => `- ${l.insight}`)
+    .join('\n');
+  return [
+    `Workers: ${workers}`,
+    `Brain: ${session.brainId} (model ${session.config.brainModel}).`,
+    `Routing: preferTier=${r.preferTier}, qualityBar=${r.qualityBar}.`,
+    'Capabilities: code-edit, code-gen, reason, summarize, chat, web.',
+    lessons ? `Recent self-learnings:\n${lessons}` : 'No self-learnings yet.',
+  ].join('\n');
+}
+
+async function cmdWatch(): Promise<void> {
+  const session = await loadSession();
+  const brain = resolveBrain(session.registry, session.brainId, {
+    model: session.config.brainModel,
+  });
+  if (!brain) fail('watch needs a brain — set one with `jack brain`.');
+  const webWorker = session.registry.candidatesFor('web', session.config.routing.preferTier)[0];
+
+  console.log(
+    magenta('\n🔭 watching') +
+      dim(` — researching via ${webWorker ? webWorker.id : 'brain knowledge (no web worker)'}…`),
+  );
+
+  const { proposals } = await runWatch({
+    brain,
+    webWorker,
+    setupSummary: describeSetup(session),
+    area: session.config.watch.area,
+  });
+
+  if (proposals.length === 0) {
+    console.log(dim('  no proposals this cycle.'));
+    return;
+  }
+  const store = await ProposalStore.load(session.config.runsDir);
+  await store.add(proposals);
+  console.log(bold(`\n🔭 ${proposals.length} proposal(s):`));
+  for (const p of proposals) {
+    console.log(`  ${magenta('▸')} ${bold(p.title)} ${dim(`[${p.kind}]`)}`);
+    console.log(`    ${dim(p.rationale)}`);
+    console.log(`    → ${p.action}`);
+  }
+  console.log(dim('\n  Review with `jack proposals`. Auto-apply (prompt/config) lands next.'));
+}
+
+async function cmdProposals(clear = false): Promise<void> {
+  const config = await loadConfig();
+  const store = await ProposalStore.load(config.runsDir);
+  if (clear) {
+    await store.clear();
+    console.log(dim('  proposals cleared.'));
+    return;
+  }
+  const items = store.all();
+  if (items.length === 0) {
+    console.log(dim('(no proposals yet — run `jack watch`)'));
+    return;
+  }
+  console.log(bold(`Improvement proposals (${items.length}):`));
+  for (const p of items.slice(-20)) {
+    const flag = p.applied ? green(' (applied)') : '';
+    console.log(`  ${magenta('▸')} ${bold(p.title)} ${dim(`[${p.kind}]`)}${flag}`);
+    console.log(`    → ${p.action}`);
+  }
+}
+
 /** Interactive brain picker; returns the (possibly unchanged) brain id. */
 async function chooseBrain(
   rl: Interface,
@@ -603,6 +687,15 @@ async function cmdInteractive(): Promise<void> {
       await cmdAdd(input.slice('add'.length).trim());
       continue;
     }
+    if (input === 'watch') {
+      await cmdWatch();
+      console.log(`\n${magenta('🎩')} ${dim('Anything else?')}\n`);
+      continue;
+    }
+    if (input === 'proposals' || input === 'proposals clear') {
+      await cmdProposals(input.endsWith('clear'));
+      continue;
+    }
     if (input === 'clear') {
       await session.history.clear();
       console.log(dim('  history cleared — fresh start.'));
@@ -663,6 +756,8 @@ async function main(): Promise<void> {
   if (first === 'cook') return cmdCook(args.slice(1));
   if (first === 'add') return cmdAdd(args.slice(1).join(' '));
   if (first === 'backlog') return cmdBacklog();
+  if (first === 'watch') return cmdWatch();
+  if (first === 'proposals') return cmdProposals(args[1] === 'clear');
   if (first === 'brain') return cmdBrain(args[1]);
 
   // Everything else is treated as the task prompt.
