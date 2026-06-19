@@ -123,6 +123,25 @@ Respond with ONLY a JSON object, no markdown fences:
 {"insight":"one actionable sentence, or empty string if nothing useful"}`;
 }
 
+export function tuningPrompt(currentValues: string, stats: string): string {
+  return `You are Jack tuning your OWN config to improve answer quality without raising cost much. Propose ONE small change to a single knob from the list below, or none if things look fine.
+
+Tunable knobs (bounds, current value, effect):
+${currentValues}
+- routing.qualityBar: higher = stricter gate, more escalations → better quality but more cost; lower = cheaper, more first-answers accepted.
+- routing.maxAttemptsPerSubtask: how many workers to try before giving up.
+- selfImprove.maxGuidance: how many past lessons to inject into each run.
+
+Recent performance:
+"""
+${stats}
+"""
+
+Make a SMALL, sensible move (e.g. ±0.05 on qualityBar). Respond with ONLY a JSON object, no markdown fences:
+{"key":"routing.qualityBar","value":0.65,"rationale":"one short sentence"}
+or, if nothing should change: {"key":"","value":0,"rationale":"why it's fine"}`;
+}
+
 export function watchResearchPrompt(area: string): string {
   return `Search for NOTABLE, RECENT, CONCRETE developments (last few months) in: ${area}.
 Focus on things a multi-worker AI orchestrator could actually adopt: new or improved models (esp. small/local ones), agent techniques, routing/evaluation methods, prompting tricks, useful tools or CLIs.

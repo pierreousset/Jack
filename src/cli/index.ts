@@ -16,13 +16,14 @@ import type { Interface } from 'node:readline/promises';
 import { createInterface } from 'node:readline/promises';
 import { resolveBrain } from '../brain/brain.js';
 import { buildRegistry, loadConfig } from '../config/load.js';
-import { saveBrainChoice, savedBrainChoice } from '../config/persist.js';
+import { saveBrainChoice, savedBrainChoice, setUserConfigPath } from '../config/persist.js';
 import { BacklogStore } from '../core/backlog.js';
 import { LearningStore } from '../core/learnings.js';
 import { orchestrate } from '../core/orchestrator.js';
 import { reflectOnRun } from '../core/reflect.js';
 import { RunStore, newRunId } from '../core/run-store.js';
 import { SessionHistory } from '../core/session.js';
+import { TUNABLE, TuningStore, proposeTuning, runScore } from '../core/tuning.js';
 import { ProposalStore, runWatch } from '../core/watch.js';
 import type { WorkerRegistry } from '../workers/registry.js';
 import {
@@ -50,6 +51,7 @@ Usage:
   jack backlog         Show the backlog
   jack watch           Research AI developments Jack could adopt → proposals
   jack proposals       Show improvement proposals (add "clear" to reset)
+  jack tune            Trial a config tweak; auto rolls back if quality drops
   jack doctor          Detect installed CLIs and local model servers
   jack workers         List registered workers
   jack brain [id]      Show or set which worker Jack uses as his brain
@@ -76,6 +78,7 @@ const REPL_HELP = `  Type a task and Jack will plan, route and run it.
     backlog     show the backlog
     watch       research AI developments Jack could adopt → proposals
     proposals   show improvement proposals (add "clear" to reset)
+    tune        trial a config tweak (tune rollback to abort)
     history     show the conversation so far
     learnings   show what Jack has learned (add "clear" to reset)
     clear       forget the conversation history
@@ -92,6 +95,7 @@ const REPL_COMMANDS = [
   'backlog',
   'watch',
   'proposals',
+  'tune',
   'history',
   'learnings',
   'clear',
@@ -131,9 +135,27 @@ interface JackSession {
   registry: WorkerRegistry;
   history: SessionHistory;
   learnings: LearningStore;
+  tuning: TuningStore;
   brainId: string;
   /** Workers that hit auth/quota errors this session — deprioritized on later runs. */
   degraded: Set<string>;
+}
+
+/** Read/write a dotted path (e.g. "routing.qualityBar") on a plain object. */
+function getPath(obj: Record<string, unknown>, path: string): unknown {
+  return path.split('.').reduce<unknown>((node, k) => {
+    return node && typeof node === 'object' ? (node as Record<string, unknown>)[k] : undefined;
+  }, obj);
+}
+function setPath(obj: Record<string, unknown>, path: string, value: unknown): void {
+  const keys = path.split('.');
+  let node: Record<string, unknown> = obj;
+  for (let i = 0; i < keys.length - 1; i += 1) {
+    const k = keys[i] as string;
+    if (typeof node[k] !== 'object' || node[k] === null) node[k] = {};
+    node = node[k] as Record<string, unknown>;
+  }
+  node[keys[keys.length - 1] as string] = value;
 }
 
 async function loadSession(): Promise<JackSession> {
@@ -144,12 +166,14 @@ async function loadSession(): Promise<JackSession> {
   }
   const history = await SessionHistory.load(config.runsDir);
   const learnings = await LearningStore.load(config.runsDir);
+  const tuning = await TuningStore.load(config.runsDir);
   const brain = resolveBrain(registry, config.brain, { model: config.brainModel });
   return {
     config,
     registry,
     history,
     learnings,
+    tuning,
     brainId: brain?.workerId ?? config.brain,
     degraded: new Set<string>(),
   };
@@ -276,6 +300,28 @@ async function executeTask(prompt: string, session: JackSession): Promise<boolea
     if (learning) {
       await session.learnings.add(learning);
       console.log(magenta(`\n  💡 learned: ${dim(learning.insight)}`));
+    }
+  }
+
+  // Self-tuning feedback: feed this run's quality score to any active tuning
+  // experiment. When enough samples are in, Jack keeps or auto-rolls-back the
+  // config change on his own.
+  if (session.config.tuning.enabled) {
+    const resolution = await session.tuning.recordRunScore(
+      runScore(record),
+      session.config.tuning.margin,
+    );
+    if (resolution) {
+      const { experiment: e, rollback } = resolution;
+      if (rollback) {
+        await setUserConfigPath(e.key, e.from);
+        setPath(session.config as unknown as Record<string, unknown>, e.key, e.from);
+        console.log(
+          yellow(`\n  ↩ rolled back ${e.key} ${e.to}→${e.from}`) + dim(` (${e.verdict})`),
+        );
+      } else {
+        console.log(green(`\n  ✓ kept ${e.key}=${e.to}`) + dim(` (${e.verdict})`));
+      }
     }
   }
 
@@ -533,6 +579,85 @@ async function cmdProposals(clear = false): Promise<void> {
   }
 }
 
+/** Current values of the tunable knobs, read from the live config. */
+function tunableValues(session: JackSession): Record<string, number> {
+  const cfg = session.config as unknown as Record<string, unknown>;
+  const out: Record<string, number> = {};
+  for (const key of Object.keys(TUNABLE)) out[key] = Number(getPath(cfg, key));
+  return out;
+}
+
+async function runTune(session: JackSession, action?: string): Promise<void> {
+  const active = session.tuning.active;
+  const base = session.tuning.baseline();
+
+  if (active) {
+    if (action === 'rollback' || action === 'abort') {
+      await session.tuning.abortActive();
+      await setUserConfigPath(active.key, active.from);
+      setPath(session.config as unknown as Record<string, unknown>, active.key, active.from);
+      console.log(yellow(`  ↩ aborted — restored ${active.key} to ${active.from}.`));
+      return;
+    }
+    console.log(
+      `${bold('Active tuning experiment:')} ${active.key} ${active.from}→${active.to}\n${dim(
+        `  ${active.trialScores.length}/${active.minSamples} scored runs · baseline ${active.baselineAvg.toFixed(2)} (${active.baselineN}) · ${active.rationale}`,
+      )}`,
+    );
+    console.log(dim('  Jack keeps or rolls this back automatically once enough runs are scored.'));
+    return;
+  }
+
+  if (action === 'rollback' || action === 'abort') {
+    console.log(dim('  no active experiment to roll back.'));
+    return;
+  }
+
+  const brain = resolveBrain(session.registry, session.brainId, {
+    model: session.config.brainModel,
+  });
+  if (!brain) fail('tune needs a brain — set one with `jack brain`.');
+
+  const stats = `Average quality ${base.avg.toFixed(2)} over ${base.n} scored run(s).`;
+  const suggestion = await proposeTuning(brain, tunableValues(session), stats);
+  if (!suggestion) {
+    console.log(dim('  nothing to tune right now — Jack is happy with his current settings.'));
+    return;
+  }
+
+  const cfg = session.config as unknown as Record<string, unknown>;
+  const from = Number(getPath(cfg, suggestion.key));
+  await setUserConfigPath(suggestion.key, suggestion.value);
+  setPath(cfg, suggestion.key, suggestion.value); // keep the live session in sync
+  await session.tuning.startExperiment({
+    id: newRunId(),
+    at: new Date().toISOString(),
+    key: suggestion.key,
+    from,
+    to: suggestion.value,
+    rationale: suggestion.rationale,
+    baselineAvg: base.avg,
+    baselineN: base.n,
+    trialScores: [],
+    minSamples: session.config.tuning.minSamples,
+    status: 'active',
+  });
+  console.log(
+    magenta(`\n🔧 trialing ${bold(`${suggestion.key} ${from}→${suggestion.value}`)}`) +
+      dim(`\n  ${suggestion.rationale}`),
+  );
+  console.log(
+    dim(
+      `  Jack will keep it if quality holds over ${session.config.tuning.minSamples} scored runs, else roll back automatically.`,
+    ),
+  );
+}
+
+async function cmdTune(action?: string): Promise<void> {
+  const session = await loadSession();
+  await runTune(session, action);
+}
+
 /** Interactive brain picker; returns the (possibly unchanged) brain id. */
 async function chooseBrain(
   rl: Interface,
@@ -696,6 +821,10 @@ async function cmdInteractive(): Promise<void> {
       await cmdProposals(input.endsWith('clear'));
       continue;
     }
+    if (input === 'tune' || input === 'tune rollback' || input === 'tune abort') {
+      await runTune(session, input.split(/\s+/)[1]);
+      continue;
+    }
     if (input === 'clear') {
       await session.history.clear();
       console.log(dim('  history cleared — fresh start.'));
@@ -758,6 +887,7 @@ async function main(): Promise<void> {
   if (first === 'backlog') return cmdBacklog();
   if (first === 'watch') return cmdWatch();
   if (first === 'proposals') return cmdProposals(args[1] === 'clear');
+  if (first === 'tune') return cmdTune(args[1]);
   if (first === 'brain') return cmdBrain(args[1]);
 
   // Everything else is treated as the task prompt.

@@ -4,6 +4,7 @@
  */
 export { Brain, resolveBrain } from './brain/brain.js';
 export { buildRegistry, loadConfig } from './config/load.js';
+export { patchUserConfig, readUserConfig, setUserConfigPath } from './config/persist.js';
 export { detectEnvironment } from './config/detect.js';
 export type { Detection } from './config/detect.js';
 export { jackConfigSchema } from './config/schema.js';
@@ -19,6 +20,14 @@ export { reflectOnRun, shouldReflect } from './core/reflect.js';
 export { routeSubtask } from './core/router.js';
 export { RunStore, newRunId } from './core/run-store.js';
 export { SessionHistory } from './core/session.js';
+export {
+  TUNABLE,
+  TuningStore,
+  normalizeValue,
+  proposeTuning,
+  runScore,
+} from './core/tuning.js';
+export type { Experiment, TunableSpec, TuneSuggestion } from './core/tuning.js';
 export { ProposalStore, runWatch } from './core/watch.js';
 export type { Proposal, ProposalKind, WatchParams } from './core/watch.js';
 export type {

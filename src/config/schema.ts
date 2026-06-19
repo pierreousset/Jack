@@ -78,6 +78,16 @@ export const jackConfigSchema = z.object({
         ),
     })
     .default({}),
+  /** Self-tuning (`jack tune`): trial a config change, roll back if it regresses. */
+  tuning: z
+    .object({
+      enabled: z.boolean().default(true),
+      /** Scored runs needed before judging a trial. */
+      minSamples: z.number().int().positive().default(4),
+      /** Quality drop (vs baseline) that triggers a rollback. */
+      margin: z.number().min(0).max(1).default(0.05),
+    })
+    .default({}),
   runsDir: z.string().default('./jack-runs'),
 });
 

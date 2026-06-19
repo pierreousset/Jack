@@ -25,6 +25,24 @@ export async function patchUserConfig(patch: Record<string, unknown>): Promise<v
   await writeFile(USER_CONFIG_PATH, JSON.stringify({ ...current, ...patch }, null, 2));
 }
 
+/**
+ * Set a dotted config path (e.g. "routing.qualityBar") in the user config,
+ * preserving sibling keys. Used by self-tuning to change one knob at a time.
+ */
+export async function setUserConfigPath(path: string, value: unknown): Promise<void> {
+  const current = await readUserConfig();
+  const keys = path.split('.');
+  let node: Record<string, unknown> = current;
+  for (let i = 0; i < keys.length - 1; i += 1) {
+    const k = keys[i] as string;
+    if (typeof node[k] !== 'object' || node[k] === null) node[k] = {};
+    node = node[k] as Record<string, unknown>;
+  }
+  node[keys[keys.length - 1] as string] = value;
+  await mkdir(USER_CONFIG_DIR, { recursive: true });
+  await writeFile(USER_CONFIG_PATH, JSON.stringify(current, null, 2));
+}
+
 /** The brain the user explicitly chose, if any (undefined = never asked). */
 export async function savedBrainChoice(): Promise<string | undefined> {
   const config = await readUserConfig();
