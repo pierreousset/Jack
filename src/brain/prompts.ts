@@ -142,6 +142,18 @@ Make a SMALL, sensible move (e.g. ±0.05 on qualityBar). Respond with ONLY a JSO
 or, if nothing should change: {"key":"","value":0,"rationale":"why it's fine"}`;
 }
 
+export function applyConfigPrompt(action: string, currentValues: string): string {
+  return `A self-improvement proposal suggests this change to Jack's config: "${action}"
+Map it to EXACTLY ONE tunable knob with a concrete new value, or none if it does not correspond to any tunable knob below.
+
+Tunable knobs (bounds, current value):
+${currentValues}
+
+Respond with ONLY a JSON object, no markdown fences:
+{"key":"routing.qualityBar","value":0.6}
+or, if it maps to no tunable knob: {"key":"","value":0}`;
+}
+
 export function watchResearchPrompt(area: string): string {
   return `Search for NOTABLE, RECENT, CONCRETE developments (last few months) in: ${area}.
 Focus on things a multi-worker AI orchestrator could actually adopt: new or improved models (esp. small/local ones), agent techniques, routing/evaluation methods, prompting tricks, useful tools or CLIs.

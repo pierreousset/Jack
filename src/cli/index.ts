@@ -23,7 +23,14 @@ import { orchestrate } from '../core/orchestrator.js';
 import { reflectOnRun } from '../core/reflect.js';
 import { RunStore, newRunId } from '../core/run-store.js';
 import { SessionHistory } from '../core/session.js';
-import { TUNABLE, TuningStore, proposeTuning, runScore } from '../core/tuning.js';
+import {
+  TUNABLE,
+  type TuneSuggestion,
+  TuningStore,
+  interpretConfigAction,
+  proposeTuning,
+  runScore,
+} from '../core/tuning.js';
 import { ProposalStore, runWatch } from '../core/watch.js';
 import type { WorkerRegistry } from '../workers/registry.js';
 import {
@@ -52,6 +59,7 @@ Usage:
   jack backlog         Show the backlog
   jack watch           Research AI developments Jack could adopt → proposals
   jack proposals       Show improvement proposals (add "clear" to reset)
+  jack apply <n>       Apply proposal #n (config ones; with auto-rollback)
   jack tune            Trial a config tweak; auto rolls back if quality drops
   jack doctor          Detect installed CLIs and local model servers
   jack workers         List registered workers
@@ -80,6 +88,7 @@ const REPL_HELP = `  Type a task and Jack will plan, route and run it.
     backlog     show the backlog
     watch       research AI developments Jack could adopt → proposals
     proposals   show improvement proposals (add "clear" to reset)
+    apply <n>   apply proposal #n (config ones, with auto-rollback)
     tune        trial a config tweak (tune rollback to abort)
     history     show the conversation so far
     learnings   show what Jack has learned (add "clear" to reset)
@@ -98,6 +107,7 @@ const REPL_COMMANDS = [
   'backlog',
   'watch',
   'proposals',
+  'apply',
   'tune',
   'history',
   'learnings',
@@ -641,11 +651,14 @@ async function cmdProposals(clear = false): Promise<void> {
     return;
   }
   console.log(bold(`Improvement proposals (${items.length}):`));
-  for (const p of items.slice(-20)) {
+  const start = Math.max(0, items.length - 20);
+  items.slice(start).forEach((p, i) => {
+    const n = start + i + 1;
     const flag = p.applied ? green(' (applied)') : '';
-    console.log(`  ${magenta('▸')} ${bold(p.title)} ${dim(`[${p.kind}]`)}${flag}`);
-    console.log(`    → ${p.action}`);
-  }
+    console.log(`  ${magenta(`${n}.`)} ${bold(p.title)} ${dim(`[${p.kind}]`)}${flag}`);
+    console.log(`     → ${p.action}`);
+  });
+  console.log(dim('\n  Apply a config one with `jack apply <number>`.'));
 }
 
 /** Current values of the tunable knobs, read from the live config. */
@@ -693,7 +706,19 @@ async function runTune(session: JackSession, action?: string): Promise<void> {
     console.log(dim('  nothing to tune right now — Jack is happy with his current settings.'));
     return;
   }
+  await applyTuneSuggestion(session, suggestion);
+}
 
+/**
+ * Apply one tunable change as a measured experiment: write the user config
+ * (preserving siblings), sync the live session, and start a trial that later
+ * runs will keep or auto-roll-back. Shared by `tune` and `apply`.
+ */
+async function applyTuneSuggestion(
+  session: JackSession,
+  suggestion: TuneSuggestion,
+): Promise<void> {
+  const base = session.tuning.baseline();
   const cfg = session.config as unknown as Record<string, unknown>;
   const from = Number(getPath(cfg, suggestion.key));
   await setUserConfigPath(suggestion.key, suggestion.value);
@@ -725,6 +750,59 @@ async function runTune(session: JackSession, action?: string): Promise<void> {
 async function cmdTune(action?: string): Promise<void> {
   const session = await loadSession();
   await runTune(session, action);
+}
+
+/** Apply proposal #n (1-based) from `jack proposals`. */
+async function cmdApply(nArg?: string): Promise<void> {
+  const n = Number(nArg);
+  if (!Number.isInteger(n) || n < 1) fail('usage: jack apply <number>  (see `jack proposals`)');
+
+  const session = await loadSession();
+  const store = await ProposalStore.load(session.config.runsDir);
+  const items = store.all();
+  const proposal = items[n - 1];
+  if (!proposal) {
+    fail(`no proposal #${n}. Run \`jack proposals\` to see the list (1–${items.length}).`);
+  }
+  if (proposal.applied) {
+    console.log(dim(`  proposal #${n} is already applied.`));
+    return;
+  }
+
+  // Guardrail: only config knobs are auto-applied. Everything else (code,
+  // prompts, new workers/models) needs a human — Jack never edits his own code.
+  if (proposal.kind !== 'config') {
+    console.log(
+      yellow(
+        `  proposal #${n} is [${proposal.kind}] — manual action required (Jack won't edit code):`,
+      ),
+    );
+    console.log(`    ${proposal.action}`);
+    return;
+  }
+
+  if (session.tuning.active) {
+    console.log(
+      yellow('  a tuning experiment is already running.') +
+        dim(' Wait for it to resolve or `jack tune rollback` first.'),
+    );
+    return;
+  }
+
+  const brain = resolveBrain(session.registry, session.brainId, {
+    model: session.config.brainModel,
+  });
+  if (!brain) fail('apply needs a brain — set one with `jack brain`.');
+
+  const suggestion = await interpretConfigAction(brain, proposal.action, tunableValues(session));
+  if (!suggestion) {
+    console.log(dim(`  couldn't map proposal #${n} to a known config knob — apply it manually:`));
+    console.log(`    ${proposal.action}`);
+    return;
+  }
+
+  await applyTuneSuggestion(session, suggestion);
+  await store.setApplied(n - 1);
 }
 
 /** Interactive brain picker; returns the (possibly unchanged) brain id. */
@@ -907,6 +985,28 @@ async function cmdInteractive(): Promise<void> {
       await cmdProposals(input.endsWith('clear'));
       continue;
     }
+    if (input.startsWith('apply ')) {
+      const n = input.slice('apply'.length).trim();
+      const store = await ProposalStore.load(session.config.runsDir);
+      const proposal = store.all()[Number(n) - 1];
+      if (proposal && proposal.kind === 'config' && !session.tuning.active) {
+        const brain = resolveBrain(session.registry, session.brainId, {
+          model: session.config.brainModel,
+        });
+        const sug = brain
+          ? await interpretConfigAction(brain, proposal.action, tunableValues(session))
+          : undefined;
+        if (sug) {
+          await applyTuneSuggestion(session, sug);
+          await store.setApplied(Number(n) - 1);
+        } else {
+          console.log(dim(`  couldn't map proposal #${n} to a config knob — apply manually.`));
+        }
+      } else {
+        await cmdApply(n); // handles the not-found / wrong-kind / busy messages
+      }
+      continue;
+    }
     if (input === 'tune' || input === 'tune rollback' || input === 'tune abort') {
       await runTune(session, input.split(/\s+/)[1]);
       continue;
@@ -974,6 +1074,7 @@ async function main(): Promise<void> {
   if (first === 'backlog') return cmdBacklog();
   if (first === 'watch') return cmdWatch();
   if (first === 'proposals') return cmdProposals(args[1] === 'clear');
+  if (first === 'apply') return cmdApply(args[1]);
   if (first === 'tune') return cmdTune(args[1]);
   if (first === 'brain') return cmdBrain(args[1]);
 

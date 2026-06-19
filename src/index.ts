@@ -23,6 +23,7 @@ export { SessionHistory } from './core/session.js';
 export {
   TUNABLE,
   TuningStore,
+  interpretConfigAction,
   normalizeValue,
   proposeTuning,
   runScore,

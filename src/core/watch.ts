@@ -67,6 +67,14 @@ export class ProposalStore {
     await this.persist();
   }
 
+  /** Mark the nth (0-based) proposal as applied. No-op if out of range. */
+  async setApplied(index: number): Promise<void> {
+    const item = this.items[index];
+    if (!item) return;
+    item.applied = true;
+    await this.persist();
+  }
+
   async clear(): Promise<void> {
     this.items = [];
     await this.persist();

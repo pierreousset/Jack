@@ -12,7 +12,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { dirname, join } from 'node:path';
 import { z } from 'zod';
 import type { Brain } from '../brain/brain.js';
-import { tuningPrompt } from '../brain/prompts.js';
+import { applyConfigPrompt, tuningPrompt } from '../brain/prompts.js';
 import type { RunRecord } from './types.js';
 
 export interface TunableSpec {
@@ -82,6 +82,28 @@ export interface TuneSuggestion {
   rationale: string;
 }
 
+/** Bullet list of tunable knobs with bounds and current values, for prompts. */
+function currentValuesBlock(current: Record<string, number>): string {
+  return Object.keys(TUNABLE)
+    .map((k) => {
+      const spec = TUNABLE[k] as TunableSpec;
+      return `- ${k} (${spec.min}–${spec.max}, now ${current[k]})`;
+    })
+    .join('\n');
+}
+
+/** Validate a brain-suggested {key,value} against the whitelist + bounds. */
+function validateSuggestion(
+  parsed: { key: string; value: number; rationale?: string },
+  current: Record<string, number>,
+  fallbackRationale: string,
+): TuneSuggestion | undefined {
+  if (!parsed.key) return undefined;
+  const value = normalizeValue(parsed.key, parsed.value);
+  if (value === null || value === current[parsed.key]) return undefined;
+  return { key: parsed.key, value, rationale: parsed.rationale ?? fallbackRationale };
+}
+
 /**
  * Ask the brain for ONE config change from the whitelist, given current values
  * and recent stats. Returns undefined if the brain declines, the key isn't
@@ -92,20 +114,30 @@ export async function proposeTuning(
   current: Record<string, number>,
   stats: string,
 ): Promise<TuneSuggestion | undefined> {
-  const currentValues = Object.keys(TUNABLE)
-    .map((k) => {
-      const spec = TUNABLE[k] as TunableSpec;
-      return `- ${k} (${spec.min}–${spec.max}, now ${current[k]})`;
-    })
-    .join('\n');
   try {
     const parsed = tuneSchema.parse(
-      await brain.askJson<unknown>(tuningPrompt(currentValues, stats)),
+      await brain.askJson<unknown>(tuningPrompt(currentValuesBlock(current), stats)),
     );
-    if (!parsed.key) return undefined;
-    const value = normalizeValue(parsed.key, parsed.value);
-    if (value === null || value === current[parsed.key]) return undefined;
-    return { key: parsed.key, value, rationale: parsed.rationale ?? '' };
+    return validateSuggestion(parsed, current, '');
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Map a free-text proposal action (from `jack watch`) to a concrete whitelisted
+ * config change. Returns undefined when it maps to no tunable knob. Never throws.
+ */
+export async function interpretConfigAction(
+  brain: Brain,
+  action: string,
+  current: Record<string, number>,
+): Promise<TuneSuggestion | undefined> {
+  try {
+    const parsed = tuneSchema.parse(
+      await brain.askJson<unknown>(applyConfigPrompt(action, currentValuesBlock(current))),
+    );
+    return validateSuggestion(parsed, current, action);
   } catch {
     return undefined;
   }

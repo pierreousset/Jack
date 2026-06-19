@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { Brain } from '../src/brain/brain.js';
+import { interpretConfigAction } from '../src/core/tuning.js';
 import { ProposalStore, runWatch } from '../src/core/watch.js';
 import { MockWorker } from '../src/workers/mock.js';
 
@@ -23,6 +24,54 @@ describe('ProposalStore', () => {
     const reloaded = await ProposalStore.load(dir);
     expect(reloaded.length).toBe(1);
     expect(reloaded.all()[0]?.title).toBe('lower bar');
+  });
+
+  it('marks a proposal applied and persists it', async () => {
+    const store = await ProposalStore.load(dir);
+    await store.add([
+      { at: 'now', kind: 'config', title: 'a', rationale: '', action: '' },
+      { at: 'now', kind: 'config', title: 'b', rationale: '', action: '' },
+    ]);
+    await store.setApplied(1);
+    const reloaded = await ProposalStore.load(dir);
+    expect(reloaded.all()[0]?.applied).toBeUndefined();
+    expect(reloaded.all()[1]?.applied).toBe(true);
+  });
+});
+
+describe('interpretConfigAction', () => {
+  const current = { 'routing.qualityBar': 0.7, 'routing.maxAttemptsPerSubtask': 3 };
+
+  it('maps a free-text action to a whitelisted, clamped change', async () => {
+    const brain = new Brain(
+      new MockWorker({
+        id: 'b',
+        respond: () => ({ ok: true, text: '{"key":"routing.qualityBar","value":0.6}' }),
+      }),
+    );
+    const s = await interpretConfigAction(brain, 'lower the quality bar a bit', current);
+    expect(s).toEqual({
+      key: 'routing.qualityBar',
+      value: 0.6,
+      rationale: 'lower the quality bar a bit',
+    });
+  });
+
+  it('returns undefined when the action maps to no tunable knob', async () => {
+    const brain = new Brain(
+      new MockWorker({ id: 'b', respond: () => ({ ok: true, text: '{"key":"","value":0}' }) }),
+    );
+    expect(await interpretConfigAction(brain, 'add a new worker', current)).toBeUndefined();
+  });
+
+  it('rejects a non-whitelisted key', async () => {
+    const brain = new Brain(
+      new MockWorker({
+        id: 'b',
+        respond: () => ({ ok: true, text: '{"key":"routing.preferTier","value":1}' }),
+      }),
+    );
+    expect(await interpretConfigAction(brain, 'change tier', current)).toBeUndefined();
   });
 });
 
