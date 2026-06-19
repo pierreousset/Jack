@@ -11,6 +11,8 @@ export type { JackConfig } from './config/schema.js';
 export { orchestrate, topologicalWaves } from './core/orchestrator.js';
 export type { OrchestratorEvents, OrchestratorOptions } from './core/orchestrator.js';
 export { classifyCapability, planTask, singleSubtaskPlan } from './core/planner.js';
+export { BacklogStore } from './core/backlog.js';
+export type { BacklogItem, BacklogStatus } from './core/backlog.js';
 export { LearningStore } from './core/learnings.js';
 export type { Learning } from './core/learnings.js';
 export { reflectOnRun, shouldReflect } from './core/reflect.js';

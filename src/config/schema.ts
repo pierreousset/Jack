@@ -59,6 +59,15 @@ export const jackConfigSchema = z.object({
       maxGuidance: z.number().int().min(0).default(5),
     })
     .default({}),
+  /** Autonomous mode (`jack cook`): work through the backlog unattended. */
+  cook: z
+    .object({
+      /** Max topics processed per cook invocation (quota/runaway guard). */
+      maxItems: z.number().int().positive().default(5),
+      /** Stop the cook after this many consecutive failed topics. */
+      stopAfterFailures: z.number().int().positive().default(2),
+    })
+    .default({}),
   runsDir: z.string().default('./jack-runs'),
 });
 

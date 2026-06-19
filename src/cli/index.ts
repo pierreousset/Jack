@@ -17,6 +17,7 @@ import { createInterface } from 'node:readline/promises';
 import { resolveBrain } from '../brain/brain.js';
 import { buildRegistry, loadConfig } from '../config/load.js';
 import { saveBrainChoice, savedBrainChoice } from '../config/persist.js';
+import { BacklogStore } from '../core/backlog.js';
 import { LearningStore } from '../core/learnings.js';
 import { orchestrate } from '../core/orchestrator.js';
 import { reflectOnRun } from '../core/reflect.js';
@@ -43,6 +44,9 @@ const HELP = `jack — route AI tasks to the subscriptions you already pay for
 Usage:
   jack                 Interactive mode — Jack asks what you want
   jack "<task>"        Run a task (plan → route → execute → report)
+  jack cook ["<topic>"]  Autonomously work through the backlog (or a topic)
+  jack add "<topic>"   Add a topic to the backlog for cook
+  jack backlog         Show the backlog
   jack doctor          Detect installed CLIs and local model servers
   jack workers         List registered workers
   jack brain [id]      Show or set which worker Jack uses as his brain
@@ -64,6 +68,9 @@ const REPL_HELP = `  Type a task and Jack will plan, route and run it.
     workers     list registered workers
     doctor      full environment check
     brain       show / change which AI Jack uses as his brain
+    cook        autonomously work through the backlog (cook "<topic>" for one)
+    add "<t>"   add a topic to the backlog
+    backlog     show the backlog
     history     show the conversation so far
     learnings   show what Jack has learned (add "clear" to reset)
     clear       forget the conversation history
@@ -75,6 +82,9 @@ const REPL_COMMANDS = [
   'workers',
   'doctor',
   'brain',
+  'cook',
+  'add',
+  'backlog',
   'history',
   'learnings',
   'clear',
@@ -353,6 +363,92 @@ async function cmdLearnings(clear = false): Promise<void> {
   }
 }
 
+const nowIso = (): string => new Date().toISOString();
+
+/**
+ * Autonomous mode: work through the backlog unattended. Each topic is a normal
+ * run, so it benefits from (and contributes to) the learnings — lessons from an
+ * early topic guide later ones in the same cook. Guarded by cook.maxItems and a
+ * consecutive-failure cutoff so it never runs away or burns quota on a dead CLI.
+ */
+async function runCook(session: JackSession, topics: string[]): Promise<void> {
+  const backlog = await BacklogStore.load(session.config.runsDir);
+  for (const t of topics) if (t.trim()) await backlog.add(t, nowIso());
+
+  const queue = backlog.pending().slice(0, session.config.cook.maxItems);
+  if (queue.length === 0) {
+    console.log(
+      dim('  nothing to cook — add topics with `jack add "<topic>"` or `jack cook "<topic>"`.'),
+    );
+    return;
+  }
+
+  const lessonsBefore = session.learnings.length;
+  console.log(magenta(`\n🍳 cooking ${queue.length} topic(s)…`));
+  let done = 0;
+  let failed = 0;
+  let consecutive = 0;
+
+  for (const [i, item] of queue.entries()) {
+    console.log(bold(`\n── ${i + 1}/${queue.length} ${dim('·')} ${item.topic}`));
+    let ok = false;
+    try {
+      ok = await executeTask(item.topic, session);
+    } catch (err) {
+      console.error(red(`  jack: ${err instanceof Error ? err.message : String(err)}`));
+    }
+    await backlog.mark(item.id, ok ? 'done' : 'failed', nowIso());
+    if (ok) {
+      done += 1;
+      consecutive = 0;
+    } else {
+      failed += 1;
+      consecutive += 1;
+      if (consecutive >= session.config.cook.stopAfterFailures) {
+        console.log(
+          yellow(`\n  ⏹ stopped after ${consecutive} consecutive failures — run \`jack doctor\`.`),
+        );
+        break;
+      }
+    }
+  }
+
+  const learned = session.learnings.length - lessonsBefore;
+  const failedPart = failed > 0 ? red(`${failed} failed`) : '0 failed';
+  const learnedPart = learned > 0 ? dim(`, ${learned} new lesson(s)`) : '';
+  console.log(magenta(`\n🍳 cook done — ${green(`${done} ok`)}, ${failedPart}${learnedPart}`));
+}
+
+async function cmdCook(topics: string[] = []): Promise<void> {
+  const session = await loadSession();
+  await runCook(session, topics);
+}
+
+async function cmdAdd(topic: string): Promise<void> {
+  if (!topic.trim()) fail('usage: jack add "<topic>"');
+  const config = await loadConfig();
+  const backlog = await BacklogStore.load(config.runsDir);
+  await backlog.add(topic, nowIso());
+  console.log(
+    green('  added to backlog') +
+      dim(` (${backlog.pending().length} pending) — run \`jack cook\` to work through them.`),
+  );
+}
+
+async function cmdBacklog(): Promise<void> {
+  const config = await loadConfig();
+  const backlog = await BacklogStore.load(config.runsDir);
+  const items = backlog.all();
+  if (items.length === 0) {
+    console.log(dim('(backlog empty — add topics with `jack add "<topic>"`)'));
+    return;
+  }
+  for (const it of items) {
+    const mark = it.status === 'done' ? green('✓') : it.status === 'failed' ? red('✗') : dim('•');
+    console.log(`  ${mark} ${it.topic}`);
+  }
+}
+
 /** Interactive brain picker; returns the (possibly unchanged) brain id. */
 async function chooseBrain(
   rl: Interface,
@@ -493,6 +589,20 @@ async function cmdInteractive(): Promise<void> {
       if (clear) session.learnings = await LearningStore.load(session.config.runsDir);
       continue;
     }
+    if (input === 'backlog') {
+      await cmdBacklog();
+      continue;
+    }
+    if (input === 'cook' || input.startsWith('cook ')) {
+      const topic = input.slice('cook'.length).trim();
+      await runCook(session, topic ? [topic] : []);
+      console.log(`\n${magenta('🎩')} ${dim('Anything else?')}\n`);
+      continue;
+    }
+    if (input.startsWith('add ')) {
+      await cmdAdd(input.slice('add'.length).trim());
+      continue;
+    }
     if (input === 'clear') {
       await session.history.clear();
       console.log(dim('  history cleared — fresh start.'));
@@ -550,6 +660,9 @@ async function main(): Promise<void> {
   if (first === 'workers') return cmdWorkers();
   if (first === 'history') return cmdHistory();
   if (first === 'learnings') return cmdLearnings(args[1] === 'clear');
+  if (first === 'cook') return cmdCook(args.slice(1));
+  if (first === 'add') return cmdAdd(args.slice(1).join(' '));
+  if (first === 'backlog') return cmdBacklog();
   if (first === 'brain') return cmdBrain(args[1]);
 
   // Everything else is treated as the task prompt.
